@@ -1,0 +1,37 @@
+# Builds dhmix.exe on Windows. Every push to main keeps the .exe as a workflow artifact;
+# pushing a tag such as v0.2.0 also publishes a GitHub Release with the .exe attached, which is
+# what people download from the Releases page.
+name: Windows build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test
+        run: cargo test --release
+      - name: Build
+        run: cargo build --release
+      - name: Keep the .exe as an artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dhmix-windows
+          path: target/release/dhmix.exe
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: target/release/dhmix.exe
+          generate_release_notes: true

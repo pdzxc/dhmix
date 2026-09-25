@@ -13,6 +13,20 @@ A free, open Voicemeeter-Potato-style mixer for streaming on Windows. No licence
 - Every knob shows its value; click a knob, or the number under a fader, to type a value. Double-click resets.
 - Engine runs at 48 kHz in 10 ms blocks; devices at other rates are resampled.
 
+## Download (Windows)
+
+Go to the [Releases page](https://github.com/pdzxc/streammix/releases), download `dhmix.exe` from
+the latest release, and run it. It is a single file; nothing else to install except a virtual
+cable (next section) if you want app audio in the mix. Windows SmartScreen may warn the first
+time because the file is not code-signed: choose "More info" then "Run anyway".
+
+Every push to `main` also builds the .exe (the "Windows build" action keeps it as an artifact),
+and pushing a tag publishes a release:
+
+```bash
+git tag v0.2.0 && git push origin v0.2.0
+```
+
 ## Build on Windows
 
 1. Install the Rust toolchain from <https://rustup.rs> (pick the default MSVC toolchain). When it asks, let it install the Visual Studio Build Tools with the "Desktop development with C++" workload.

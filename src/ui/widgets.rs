@@ -2,7 +2,7 @@
 //! charcoal panels, cyan uppercase headings, LED buttons, rotary knobs, ruler faders and
 //! segmented meters.
 
-use egui::{Align2, Color32, FontId, Margin, Pos2, Rect, Response, Rounding, Sense, Stroke, Ui, Vec2};
+use egui::{Align, Align2, Color32, FontId, Margin, Pos2, Rect, Response, Rounding, Sense, Shape, Stroke, Ui, UiBuilder, Vec2};
 use std::ops::RangeInclusive;
 
 // ---- Layout tokens ---------------------------------------------------------------------------
@@ -32,6 +32,9 @@ pub const ROUTE_COMBO_WIDTH: f32 = 230.0;
 pub const FINE_TUNE_SLIDER_WIDTH: f32 = 144.0;
 /// Column and row gaps of the Applications table.
 pub const TABLE_SPACING: Vec2 = Vec2::new(12.0, 6.0);
+/// The floating Player window: wide enough for the pad grid beside the fader.
+pub const PLAYER_WINDOW_WIDTH: f32 = 360.0;
+pub const PLAYER_WINDOW_FADER_HEIGHT: f32 = 150.0;
 pub const PAD_HEIGHT: f32 = 26.0;
 pub const PAD_SPACING: f32 = 4.0;
 pub const XY_PAD_HEIGHT: f32 = 70.0;
@@ -40,21 +43,33 @@ pub const INPUT_ROW_SHARE: f32 = 0.58;
 /// Height of a `section` caption row, used when splitting the window between the two rows.
 pub const SECTION_CAPTION_HEIGHT: f32 = 16.0;
 /// Narrowest routing LED that still shows "A1" legibly.
-pub const MIN_LED_ROUTE_WIDTH: f32 = 20.0;
-/// Narrowest column, derived so five routing LEDs at their minimum fit beside the fader and meter.
-pub const MIN_COLUMN_WIDTH: f32 =
-    5.0 * MIN_LED_ROUTE_WIDTH + 4.0 * ITEM_SPACING + ITEM_SPACING + FADER_WIDTH + METER_WIDTH + 2.0 * PANEL_PADDING;
+pub const MIN_LED_ROUTE_WIDTH: f32 = 30.0;
+/// Narrowest column, derived from the larger hardware / virtual routing row beside the fader and meter.
+pub const MIN_COLUMN_WIDTH: f32 = max_bus_group_count() as f32 * MIN_LED_ROUTE_WIDTH
+    + (max_bus_group_count() - 1) as f32 * ITEM_SPACING
+    + ITEM_SPACING
+    + FADER_WIDTH
+    + METER_WIDTH
+    + 2.0 * PANEL_PADDING;
 /// Fixed content of an input column besides its fader: header, device, knobs, pad, pan row.
 pub const INPUT_FIXED_HEIGHT: f32 = 230.0;
 /// Fixed content of an output column besides its fader: header, device, tone knobs, LEDs.
 pub const OUTPUT_FIXED_HEIGHT: f32 = 110.0;
 /// Top bar plus the first-run banner.
 pub const CHROME_HEIGHT: f32 = 140.0;
-/// Smallest window: seven columns at their minimum width, and both rows at their minimum height.
+/// Smallest window: the larger mixer row at its minimum width, and both rows at minimum height.
 pub const MIN_WINDOW: Vec2 = Vec2::new(
-    crate::NUM_STRIPS as f32 * (MIN_COLUMN_WIDTH + ITEM_SPACING) + 2.0 * SECTION_GAP + ITEM_SPACING,
+    mixer_column_count() as f32 * (MIN_COLUMN_WIDTH + ITEM_SPACING) + 2.0 * SECTION_GAP + ITEM_SPACING,
     CHROME_HEIGHT + 2.0 * (SECTION_GAP + SECTION_CAPTION_HEIGHT) + INPUT_FIXED_HEIGHT + OUTPUT_FIXED_HEIGHT + 2.0 * FADER_MIN_HEIGHT,
 );
+
+const fn mixer_column_count() -> usize {
+    if crate::PLAYER_STRIP > crate::NUM_BUSES {
+        crate::PLAYER_STRIP
+    } else {
+        crate::NUM_BUSES
+    }
+}
 
 pub const FADER_MIN_DB: f32 = -60.0;
 pub const FADER_MAX_DB: f32 = 12.0;
@@ -69,7 +84,8 @@ pub struct Geometry {
     pub inner: f32,
     /// Width left of the fader and meter.
     pub left: f32,
-    pub led_route: Vec2,
+    pub led_route_hardware: Vec2,
+    pub led_route_virtual: Vec2,
     pub led_triple: Vec2,
     pub led_pair: Vec2,
     /// The tone / echo pad beside the two knobs.
@@ -87,13 +103,26 @@ impl Geometry {
         Self {
             inner,
             left,
-            led_route: Vec2::new((left - 4.0 * ITEM_SPACING) / 5.0, LED_HEIGHT),
+            led_route_hardware: Vec2::new(route_button_width(left, crate::NUM_HW_BUSES), LED_HEIGHT),
+            led_route_virtual: Vec2::new(route_button_width(left, crate::NUM_VIRT_BUSES), LED_HEIGHT),
             led_triple: Vec2::new((left - 2.0 * ITEM_SPACING) / 3.0, LED_HEIGHT),
             led_pair: Vec2::new((left - ITEM_SPACING) / 2.0, LED_HEIGHT),
             xy_pad: Vec2::new(inner - 2.0 * KNOB_WIDTH - 2.0 * ITEM_SPACING, XY_PAD_HEIGHT),
             pad: Vec2::new((left - 2.0 * PAD_SPACING) / 3.0, PAD_HEIGHT),
         }
     }
+}
+
+const fn max_bus_group_count() -> usize {
+    if crate::NUM_HW_BUSES > crate::NUM_VIRT_BUSES {
+        crate::NUM_HW_BUSES
+    } else {
+        crate::NUM_VIRT_BUSES
+    }
+}
+
+fn route_button_width(available: f32, count: usize) -> f32 {
+    (available - count.saturating_sub(1) as f32 * ITEM_SPACING) / count.max(1) as f32
 }
 
 /// Width of each of `count` equal columns across `available`, leaving one spacing spare so the
@@ -210,15 +239,31 @@ fn framed(fill: Color32, stroke: Color32) -> egui::Frame {
 /// One strip or bus: a console panel whose outer width is exactly `width`. Returns its rect so the
 /// caller can measure how tall the content came out.
 pub fn panel(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) -> Rect {
-    framed(COLOR_STRIP, COLOR_STRIP_STROKE)
-        .show(ui, |ui| {
-            let inner = width - 2.0 * PANEL_PADDING;
-            ui.set_width(inner);
-            ui.set_max_width(inner);
-            ui.vertical(add);
-        })
-        .response
-        .rect
+    let frame = framed(COLOR_STRIP, COLOR_STRIP_STROKE);
+    let panel_min = ui.next_widget_position();
+    let inner_width = (width - 2.0 * PANEL_PADDING).max(0.0);
+    let inner_min = panel_min + Vec2::splat(PANEL_PADDING);
+    let inner_max = egui::pos2(inner_min.x + inner_width, ui.max_rect().bottom() - PANEL_PADDING);
+    let background = ui.painter().add(Shape::Noop);
+
+    // A normal `Frame::show` grows its parent when a child asks for more width. Mixer controls
+    // intentionally keep a readable minimum, so use an independently clipped child and allocate
+    // only the declared outer rectangle in the row. Content may clip, but neighbouring columns
+    // never drift out of alignment.
+    let mut content_ui = ui.new_child(
+        UiBuilder::new()
+            .max_rect(Rect::from_min_max(inner_min, inner_max))
+            .layout(egui::Layout::top_down(Align::Min)),
+    );
+    content_ui.set_width(inner_width);
+    content_ui.set_clip_rect(content_ui.clip_rect().intersect(Rect::from_min_max(panel_min, egui::pos2(panel_min.x + width, ui.max_rect().bottom()))));
+    add(&mut content_ui);
+
+    let height = content_ui.min_rect().height() + 2.0 * PANEL_PADDING;
+    let rect = Rect::from_min_size(panel_min, Vec2::new(width, height));
+    ui.painter().set(background, frame.paint(rect));
+    ui.allocate_rect(rect, Sense::hover());
+    rect
 }
 
 /// Full-width notice, used for first-run guidance.
@@ -566,7 +611,8 @@ mod tests {
     fn geometry_fills_its_column_exactly() {
         let g = Geometry::for_column(230.0);
         assert_eq!(g.inner, 214.0);
-        assert!((5.0 * g.led_route.x + 4.0 * ITEM_SPACING - g.left).abs() < 1e-4);
+        assert!((crate::NUM_HW_BUSES as f32 * g.led_route_hardware.x + (crate::NUM_HW_BUSES - 1) as f32 * ITEM_SPACING - g.left).abs() < 1e-4);
+        assert!((crate::NUM_VIRT_BUSES as f32 * g.led_route_virtual.x + (crate::NUM_VIRT_BUSES - 1) as f32 * ITEM_SPACING - g.left).abs() < 1e-4);
         assert!((2.0 * KNOB_WIDTH + g.xy_pad.x + 2.0 * ITEM_SPACING - g.inner).abs() < 1e-4);
         assert!((3.0 * g.pad.x + 2.0 * PAD_SPACING - g.left).abs() < 1e-4);
     }
@@ -575,8 +621,27 @@ mod tests {
     fn geometry_never_shrinks_below_the_minimum_column() {
         let g = Geometry::for_column(120.0);
         assert_eq!(g, Geometry::for_column(MIN_COLUMN_WIDTH));
-        assert!(g.led_route.x >= MIN_LED_ROUTE_WIDTH - 1e-4, "routing LEDs stay readable: {}", g.led_route.x);
+        assert!(
+            g.led_route_hardware.x >= MIN_LED_ROUTE_WIDTH - 1e-4,
+            "hardware routing LEDs stay readable: {}",
+            g.led_route_hardware.x
+        );
+        assert!(
+            g.led_route_virtual.x >= MIN_LED_ROUTE_WIDTH - 1e-4,
+            "virtual routing LEDs stay readable: {}",
+            g.led_route_virtual.x
+        );
         assert!(g.pad.x >= 30.0);
+    }
+
+    /// The Player window passes its own width plus the panel's own padding back into
+    /// `for_column`, since `for_column` always subtracts padding once for the panel it draws.
+    /// The strip inside the floating window must end up exactly `PLAYER_WINDOW_WIDTH` wide,
+    /// matching every other column's panel.
+    #[test]
+    fn player_window_geometry_yields_its_declared_width() {
+        let g = Geometry::for_column(PLAYER_WINDOW_WIDTH + 2.0 * PANEL_PADDING);
+        assert_eq!(g.inner, PLAYER_WINDOW_WIDTH);
     }
 
     #[test]
@@ -589,6 +654,21 @@ mod tests {
     fn column_width_for_a_single_column_leaves_one_spacing_spare() {
         let w = column_width(500.0, 1);
         assert_eq!(w, 500.0 - ITEM_SPACING);
+    }
+
+    #[test]
+    fn panel_keeps_its_declared_width_when_content_requests_more_room() {
+        egui::__run_test_ui(|ui| {
+            let declared = 200.0;
+            let rect = panel(ui, declared, |ui| {
+                ui.allocate_exact_size(Vec2::new(declared + 40.0, 20.0), Sense::hover());
+            });
+            assert!(
+                (rect.width() - declared).abs() < 1e-4,
+                "panel expanded from {declared} to {} px",
+                rect.width()
+            );
+        });
     }
 
     #[test]
@@ -611,12 +691,12 @@ mod tests {
         }
     }
 
-    /// The narrowest window the app claims to support: MIN_WINDOW.x px split across every strip and bus
-    /// column, minus the layout slack the app reserves. Every size the column derives from that
-    /// width must still be usable, and a routing LED must be wide enough to read its label.
+    /// The narrowest window the app claims to support: MIN_WINDOW.x px split across every mixer
+    /// column. Every size the column derives from that width must still be usable, and a routing
+    /// LED must be wide enough to read its label.
     #[test]
     fn geometry_at_the_minimum_window_width_keeps_every_derived_size_usable() {
-        let column = column_width(MIN_WINDOW.x - 2.0 * SECTION_GAP, 7);
+        let column = column_width(MIN_WINDOW.x - 2.0 * SECTION_GAP, mixer_column_count());
         let g = Geometry::for_column(column);
         assert!(g.inner > 0.0, "inner width must be positive, got {}", g.inner);
         assert!(g.left > 0.0, "left width must be positive, got {}", g.left);
@@ -624,12 +704,8 @@ mod tests {
         assert!(g.led_pair.x > 0.0);
         assert!(g.xy_pad.x > 0.0);
         assert!(g.pad.x > 0.0);
-        assert!(
-            g.led_route.x >= 14.0,
-            "routing LED must stay at least 14 px wide to hold its label, got {} at column width {}",
-            g.led_route.x,
-            column,
-        );
+        assert!(g.led_route_hardware.x >= MIN_LED_ROUTE_WIDTH);
+        assert!(g.led_route_virtual.x >= MIN_LED_ROUTE_WIDTH);
     }
 
     #[test]

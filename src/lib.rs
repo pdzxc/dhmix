@@ -28,13 +28,13 @@ pub const BLOCK_FRAMES: usize = 480;
 pub const CHANNELS: usize = 2;
 
 pub const NUM_HW_STRIPS: usize = 3;
-pub const NUM_VIRT_STRIPS: usize = 3;
+pub const NUM_VIRT_STRIPS: usize = 2;
 /// The soundboard / music player strip. It has no input device: its audio comes from files.
 pub const NUM_PLAYER_STRIPS: usize = 1;
 pub const NUM_STRIPS: usize = NUM_HW_STRIPS + NUM_VIRT_STRIPS + NUM_PLAYER_STRIPS;
 pub const PLAYER_STRIP: usize = NUM_HW_STRIPS + NUM_VIRT_STRIPS;
 
-pub const NUM_HW_BUSES: usize = 5;
+pub const NUM_HW_BUSES: usize = 3;
 pub const NUM_VIRT_BUSES: usize = 2;
 pub const NUM_BUSES: usize = NUM_HW_BUSES + NUM_VIRT_BUSES;
 

@@ -14,14 +14,14 @@ const SECTIONS: &[(&str, &[&str])] = &[
         "Inputs: where sound comes in",
         &[
             "Hardware input 1, 2, 3 are real things plugged into your PC: your microphone, a second mic, a guitar or a console line. Pick the device under the name.",
-            "Virtual input 1, 2, 3 are programs on your PC: the game, Discord, Spotify. They cannot plug in with a wire, so they play into a virtual cable, and the cable's other end shows up here.",
+            "Virtual input 1 and 2 are programs on your PC: the game, Discord, Spotify. They cannot plug in with a wire, so they play into a virtual cable, and the cable's other end shows up here.",
             "Player is music and sound clips you load into StreamMix itself.",
         ],
     ),
     (
         "Outputs: where the mix goes out",
         &[
-            "A1 to A5 (hardware out) go to things you hear with your ears: headphones, speakers, a second pair of headphones for a guest. A1 is usually your headphones.",
+            "A1 to A3 (hardware out) go to things you hear with your ears: headphones, speakers, a second pair of headphones for a guest. A1 is usually your headphones.",
             "B1 and B2 (virtual out) go to programs, not ears. B1 is what OBS or Discord hears as your microphone. Nothing physical is connected; it is a cable into another program.",
         ],
     ),
@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn guide_covers_inputs_outputs_and_the_routing_rule() {
         let text: String = SECTIONS.iter().flat_map(|(h, ps)| std::iter::once(*h).chain(ps.iter().copied())).collect();
-        for needed in ["Hardware input", "Virtual input", "Player", "A1 to A5", "B1 and B2", "A means to my ears"] {
+        for needed in ["Hardware input", "Virtual input", "Player", "A1 to A3", "B1 and B2", "A means to my ears"] {
             assert!(text.contains(needed), "guide should mention {needed}");
         }
     }

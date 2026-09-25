@@ -199,7 +199,7 @@ impl Mixer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::SAMPLE_RATE;
+    use crate::{NUM_HW_BUSES, SAMPLE_RATE};
 
     fn block(value: f32) -> Vec<f32> {
         vec![value; BLOCK_FRAMES * CHANNELS]
@@ -226,12 +226,12 @@ mod tests {
     fn strip_reaches_only_the_buses_it_is_routed_to() {
         let mut s = quiet_settings();
         s.strips[0].routing[0] = true;
-        s.strips[0].routing[5] = true;
+        s.strips[0].routing[NUM_HW_BUSES] = true;
         let mut inputs = vec![block(0.0); NUM_STRIPS];
         inputs[0] = block(0.25);
         let out = run(s, inputs);
         assert!((out[0][0] - 0.25).abs() < 1e-6, "A1 gets it");
-        assert!((out[5][0] - 0.25).abs() < 1e-6, "B1 gets it");
+        assert!((out[NUM_HW_BUSES][0] - 0.25).abs() < 1e-6, "B1 gets it");
         assert_eq!(out[1][0], 0.0, "A2 stays silent");
     }
 
@@ -309,21 +309,21 @@ mod tests {
     #[test]
     fn player_strip_solo_and_mute_together_stays_silent() {
         let mut s = quiet_settings();
-        s.strips[crate::PLAYER_STRIP].routing[5] = true;
+        s.strips[crate::PLAYER_STRIP].routing[NUM_HW_BUSES] = true;
         s.strips[crate::PLAYER_STRIP].solo = true;
         s.strips[crate::PLAYER_STRIP].mute = true;
         let mut inputs = vec![block(0.0); NUM_STRIPS];
         inputs[crate::PLAYER_STRIP] = block(0.4);
         let out = run(s, inputs);
-        assert_eq!(out[5][0], 0.0, "mute wins even though the strip is also soloed");
+        assert_eq!(out[NUM_HW_BUSES][0], 0.0, "mute wins even though the strip is also soloed");
     }
 
     #[test]
     fn default_settings_send_everything_to_a1_and_mic_and_player_to_b1() {
         let s = MixSettings::default();
         assert!(s.strips.iter().all(|st| st.routing[0]));
-        assert!(s.strips[0].routing[5]);
-        assert!(s.strips[crate::PLAYER_STRIP].routing[5]);
-        assert!(!s.strips[1].routing[5]);
+        assert!(s.strips[0].routing[NUM_HW_BUSES]);
+        assert!(s.strips[crate::PLAYER_STRIP].routing[NUM_HW_BUSES]);
+        assert!(!s.strips[1].routing[NUM_HW_BUSES]);
     }
 }

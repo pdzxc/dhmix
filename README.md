@@ -4,8 +4,8 @@ A free, open Voicemeeter-Potato-style mixer for streaming on Windows. No licence
 
 ![StreamMix running on macOS during development](screenshot-macos.png)
 
-- **7 input strips**: HW 1–3 (microphones, interfaces), VIRT 1–3 (virtual cables that apps play into), PLAYER (soundboard + music)
-- **7 output buses**: A1–A5 hardware outs (headphones, speakers, a second PC), B1–B2 virtual outs (what OBS, Discord or a call hears)
+- **6 input strips**: HW 1–3 (microphones, interfaces), VIRT 1–2 (virtual cables that apps play into), PLAYER (soundboard + music)
+- **5 output buses**: A1–A3 hardware outs (headphones, speakers, a second PC), B1–B2 virtual outs (what OBS, Discord or a call hears)
 - **Per strip**: gain fader, pan, MONO, SOLO, MUTE, routing grid, and an FX chain of denoiser (RNNoise), noise gate, 4-band EQ (low cut, bass, mid, treble), compressor, echo and reverb
 - **Per bus**: gain, mute, bass/treble tone, brick-wall limiter
 - **Streaming extras**: soundboard with 9 pads and global hotkeys (Ctrl+Alt+1–9), music player with loop and seek, global mute hotkey (Ctrl+Alt+M), WAV recording of any bus, presets (JSON), state restored on next launch
@@ -57,10 +57,10 @@ device preferences" (Windows 10) and set each app's output:
 | --- | --- | --- |
 | Game | `CABLE Input` | VIRT 1 ← `CABLE Output` |
 | Discord | `CABLE-A Input` | VIRT 2 ← `CABLE-A Output` |
-| Spotify / browser | `CABLE-B Input` | VIRT 3 ← `CABLE-B Output` |
+| Spotify / browser | Share VIRT 1 or VIRT 2, depending on the mix you want | Select that cable's matching output |
 
 Each strip then has its own fader, effects and routing, so you can send the game to your headphones
-only, or Discord to the stream at a lower level. VB-CABLE plus its A+B pack gives three cables.
+only, or Discord to the stream at a lower level. StreamMix provides two virtual input strips.
 
 ## Soundboard and music
 

@@ -254,20 +254,23 @@ pub fn fx_row(ui: &mut Ui, s: &mut StripSettings, geo: Geometry) {
     });
 }
 
-/// Two rows of LEDs: hardware outs A1..A5 in green, then virtual outs B1..B2 in blue.
+/// Two rows of LEDs: hardware outs A1..A3 in green, then virtual outs B1..B2 in blue.
 pub fn routing_rows(ui: &mut Ui, routing: &mut [bool; NUM_BUSES], strip: usize, geo: Geometry) {
     let (hardware, virtual_buses) = routing.split_at_mut(NUM_HW_BUSES);
     ui.horizontal(|ui| {
         for (b, on) in hardware.iter_mut().enumerate() {
-            ui.push_id((strip, b), |ui| widgets::led(ui, on, &bus_name(b), COLOR_ACTIVE, geo.led_route, TIP_HARDWARE_ROUTE));
+            ui.push_id((strip, b), |ui| {
+                widgets::led(ui, on, &bus_name(b), COLOR_ACTIVE, geo.led_route_hardware, TIP_HARDWARE_ROUTE)
+            });
         }
     });
     ui.horizontal(|ui| {
         for (offset, on) in virtual_buses.iter_mut().enumerate() {
             let b = NUM_HW_BUSES + offset;
-            ui.push_id((strip, b), |ui| widgets::led(ui, on, &bus_name(b), COLOR_VIRTUAL, geo.led_route, TIP_VIRTUAL_ROUTE));
+            ui.push_id((strip, b), |ui| {
+                widgets::led(ui, on, &bus_name(b), COLOR_VIRTUAL, geo.led_route_virtual, TIP_VIRTUAL_ROUTE)
+            });
         }
-        widgets::hint(ui, "stream / call");
     });
 }
 

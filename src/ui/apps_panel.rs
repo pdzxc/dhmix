@@ -122,13 +122,13 @@ impl AppsPanel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NUM_HW_STRIPS;
+    use crate::{NUM_HW_BUSES, NUM_HW_STRIPS};
 
     fn io() -> IoSettings {
         let mut io = IoSettings::empty();
         io.strip_inputs[NUM_HW_STRIPS] = Some("CABLE Output (VB-Audio Virtual Cable)".into());
         io.bus_outputs[0] = Some("Speakers (Realtek)".into());
-        io.bus_outputs[5] = Some("CABLE-A Input (VB-Audio Cable A)".into());
+        io.bus_outputs[NUM_HW_BUSES] = Some("CABLE-A Input (VB-Audio Cable A)".into());
         io
     }
 

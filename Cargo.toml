@@ -2,7 +2,7 @@
 name = "streammix"
 version = "0.1.0"
 edition = "2021"
-description = "Free, open virtual audio mixer for streaming (Voicemeeter-style): 6 input strips, 5 hardware + 2 virtual buses, per-strip denoiser/gate/EQ/compressor/echo/reverb."
+description = "Free, open virtual audio mixer for streaming (Voicemeeter-style): 6 input strips, 3 hardware + 2 virtual buses, per-strip denoiser/gate/EQ/compressor/echo/reverb."
 license = "MIT"
 
 [[bin]]

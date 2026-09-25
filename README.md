@@ -2,6 +2,8 @@
 
 A free, open Voicemeeter-Potato-style mixer for streaming on Windows. No licence, no nag screen.
 
+![StreamMix running on macOS during development](screenshot-macos.png)
+
 - **7 input strips**: HW 1–3 (microphones, interfaces), VIRT 1–3 (virtual cables that apps play into), PLAYER (soundboard + music)
 - **7 output buses**: A1–A5 hardware outs (headphones, speakers, a second PC), B1–B2 virtual outs (what OBS, Discord or a call hears)
 - **Per strip**: gain fader, pan, MONO, SOLO, MUTE, routing grid, and an FX chain of denoiser (RNNoise), noise gate, 4-band EQ (low cut, bass, mid, treble), compressor, echo and reverb

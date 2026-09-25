@@ -20,6 +20,13 @@ pub const METER_SEGMENTS: usize = 30;
 pub const FADER_MIN_HEIGHT: f32 = 110.0;
 pub const FADER_MAX_HEIGHT: f32 = 420.0;
 pub const KNOB_SIZE: f32 = 36.0;
+/// Buttons stacked beside a fader never grow past this, so the meter gets the spare width.
+pub const SIDE_BUTTON_MAX_WIDTH: f32 = 96.0;
+/// The "DH" badge in front of the DHMIX wordmark, and the size of its lettering.
+pub const LOGO_SIZE: Vec2 = Vec2::new(30.0, 22.0);
+pub const LOGO_FONT_SIZE: f32 = 12.0;
+/// Top-bar window toggles (Player, Applications, Help).
+pub const TOP_TOGGLE_SIZE: Vec2 = Vec2::new(92.0, 22.0);
 /// Outer width of a knob widget.
 pub const KNOB_WIDTH: f32 = KNOB_SIZE + 12.0;
 pub const LED_HEIGHT: f32 = 22.0;
@@ -46,19 +53,26 @@ pub const INPUT_ROW_SHARE: f32 = 0.58;
 pub const SECTION_CAPTION_HEIGHT: f32 = 16.0;
 /// Narrowest routing LED that still shows "A1" legibly.
 pub const MIN_LED_ROUTE_WIDTH: f32 = 30.0;
-/// Narrowest column, derived from the larger hardware / virtual routing row beside the fader and meter.
-pub const MIN_COLUMN_WIDTH: f32 = max_bus_group_count() as f32 * MIN_LED_ROUTE_WIDTH
+/// Narrowest button in the columns beside a fader that still shows "MUTE" or "LIMIT" legibly.
+pub const MIN_SIDE_BUTTON_WIDTH: f32 = 40.0;
+/// Narrowest column that still fits the Player window's routing row beside a fader and meter.
+const MIN_COLUMN_FOR_ROUTES: f32 = max_bus_group_count() as f32 * MIN_LED_ROUTE_WIDTH
     + (max_bus_group_count() - 1) as f32 * ITEM_SPACING
     + ITEM_SPACING
     + FADER_WIDTH
     + METER_WIDTH
     + 2.0 * PANEL_PADDING;
+/// Narrowest column that still fits a bus row: knobs, fader, meter and a legible button column.
+const MIN_COLUMN_FOR_BUS: f32 =
+    KNOB_WIDTH + FADER_WIDTH + METER_WIDTH + 3.0 * ITEM_SPACING + 2.0 * MIN_SIDE_BUTTON_WIDTH + 2.0 * PANEL_PADDING;
+/// Narrowest column: whichever row needs more.
+pub const MIN_COLUMN_WIDTH: f32 = if MIN_COLUMN_FOR_ROUTES > MIN_COLUMN_FOR_BUS { MIN_COLUMN_FOR_ROUTES } else { MIN_COLUMN_FOR_BUS };
 /// Height of an input column beyond its fader, measured from the rendered panel at a known
 /// fader height. Re-measure after changing panel_header, the device combo, KNOB_SIZE,
 /// XY_PAD_HEIGHT, the pan row, PANEL_PADDING or ITEM_SPACING, or the fader will be clipped.
-pub const INPUT_FIXED_HEIGHT: f32 = 184.0;
+pub const INPUT_FIXED_HEIGHT: f32 = 305.0;
 /// Same for an output column: header, device combo, tone knobs, LED row, padding.
-pub const OUTPUT_FIXED_HEIGHT: f32 = 84.0;
+pub const OUTPUT_FIXED_HEIGHT: f32 = 105.0;
 /// Top bar plus the first-run banner.
 pub const CHROME_HEIGHT: f32 = 140.0;
 /// Smallest window: the larger mixer row at its minimum width, and both rows at minimum height.
@@ -86,14 +100,26 @@ pub const METER_AMBER_TOP_DB: f32 = -6.0;
 pub struct Geometry {
     /// Width inside the panel padding.
     pub inner: f32,
-    /// Width left of the fader and meter.
+    /// Width left of the fader and meter (the Player window's pad grid and routing rows).
     pub left: f32,
     pub led_route_hardware: Vec2,
     pub led_route_virtual: Vec2,
     pub led_triple: Vec2,
     pub led_pair: Vec2,
-    /// The tone / echo pad beside the two knobs.
+    /// The tone / echo pad, full column width, at the top of a strip.
     pub xy_pad: Vec2,
+    /// One effect LED in the two-by-two grid beside the COMP and GATE knobs.
+    pub fx_led: Vec2,
+    /// One button in the two columns beside a strip's fader (routes; mono / solo / mute).
+    pub side_button: Vec2,
+    /// Meter width beside a strip's fader, whatever the two button columns leave.
+    pub strip_meter: f32,
+    /// The FINE-TUNE opener, the same size wherever a strip is drawn.
+    pub fine_tune_button: Vec2,
+    /// One button in the column beside a bus's fader (limit, mute).
+    pub bus_button: Vec2,
+    /// Meter width beside a bus's fader, whatever the knobs and buttons leave.
+    pub bus_meter: f32,
     /// One soundboard pad in a three-column grid that spans `left`.
     pub pad: Vec2,
 }
@@ -104,6 +130,12 @@ impl Geometry {
         // legible size and the panel clips them at its edge instead of shrinking them to nothing.
         let inner = width.max(MIN_COLUMN_WIDTH) - 2.0 * PANEL_PADDING;
         let left = inner - FADER_WIDTH - METER_WIDTH - ITEM_SPACING;
+        // Strip bottom block: fader, meter, then two button columns; the meter takes the rest.
+        let side_w = ((inner - FADER_WIDTH - METER_WIDTH - 3.0 * ITEM_SPACING) / 2.0).min(SIDE_BUTTON_MAX_WIDTH);
+        let strip_meter = inner - FADER_WIDTH - 2.0 * side_w - 3.0 * ITEM_SPACING;
+        // Bus: knob column, fader, wide meter, one button column.
+        let bus_button_w = ((inner - KNOB_WIDTH - FADER_WIDTH - METER_WIDTH - 3.0 * ITEM_SPACING) / 2.0).min(SIDE_BUTTON_MAX_WIDTH);
+        let bus_meter = inner - KNOB_WIDTH - FADER_WIDTH - bus_button_w - 3.0 * ITEM_SPACING;
         Self {
             inner,
             left,
@@ -111,7 +143,13 @@ impl Geometry {
             led_route_virtual: Vec2::new(route_button_width(left, crate::NUM_VIRT_BUSES), LED_HEIGHT),
             led_triple: Vec2::new((left - 2.0 * ITEM_SPACING) / 3.0, LED_HEIGHT),
             led_pair: Vec2::new((left - ITEM_SPACING) / 2.0, LED_HEIGHT),
-            xy_pad: Vec2::new(inner - 2.0 * KNOB_WIDTH - 2.0 * ITEM_SPACING, XY_PAD_HEIGHT),
+            xy_pad: Vec2::new(inner, XY_PAD_HEIGHT),
+            fx_led: Vec2::new((inner - 2.0 * KNOB_WIDTH - 3.0 * ITEM_SPACING) / 2.0, LED_HEIGHT),
+            side_button: Vec2::new(side_w, LED_HEIGHT),
+            fine_tune_button: Vec2::new(side_w, LED_HEIGHT),
+            strip_meter,
+            bus_button: Vec2::new(bus_button_w, LED_HEIGHT),
+            bus_meter,
             pad: Vec2::new((left - 2.0 * PAD_SPACING) / 3.0, PAD_HEIGHT),
         }
     }
@@ -270,6 +308,15 @@ pub fn banner(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
     framed(COLOR_PANEL, COLOR_VIRTUAL.gamma_multiply(0.6)).show(ui, |ui| ui.vertical(add));
 }
 
+/// The brand: a "DH" badge and the DHMIX wordmark.
+pub fn logo(ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(LOGO_SIZE, Sense::hover());
+    let painter = ui.painter();
+    painter.rect_filled(rect, Rounding::same(CONTROL_RADIUS), COLOR_HEADING);
+    painter.text(rect.center(), Align2::CENTER_CENTER, "DH", FontId::proportional(LOGO_FONT_SIZE), COLOR_BG);
+    ui.label(egui::RichText::new("DHMIX").heading().color(COLOR_HEADING));
+}
+
 /// Console heading in cyan capitals, with an optional status word on the right.
 pub fn panel_header(ui: &mut Ui, title: &str, status: Option<(&str, Color32)>) {
     ui.horizontal(|ui| {
@@ -285,6 +332,11 @@ pub fn panel_header(ui: &mut Ui, title: &str, status: Option<(&str, Color32)>) {
 /// Small uppercase caption naming the group of controls beneath it.
 pub fn section(ui: &mut Ui, label: &str) {
     ui.add_space(SECTION_GAP);
+    caption(ui, label);
+}
+
+/// The same caption inline, naming the group of controls beside it (top bar).
+pub fn caption(ui: &mut Ui, label: &str) {
     ui.label(egui::RichText::new(label.to_uppercase()).size(9.5).strong().color(COLOR_TEXT_MUTED));
 }
 
@@ -472,9 +524,11 @@ fn segment_color(fraction: f32) -> Color32 {
     }
 }
 
-/// Two columns of LED segments, aligned with the fader track beside them.
-pub fn meter(ui: &mut Ui, peaks: [f32; 2], height: f32) {
-    let size = Vec2::new(METER_WIDTH, height + 16.0);
+/// Two columns of LED segments, aligned with the fader track beside them. `width` is at least
+/// METER_WIDTH; a wider meter just gets wider segments.
+pub fn meter(ui: &mut Ui, peaks: [f32; 2], height: f32, width: f32) {
+    let width = width.max(METER_WIDTH);
+    let size = Vec2::new(width, height + 16.0);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let top = rect.top() + 8.0;
     let bottom = rect.top() + height - 8.0;
@@ -482,7 +536,7 @@ pub fn meter(ui: &mut Ui, peaks: [f32; 2], height: f32) {
     let painter = ui.painter();
     painter.rect_filled(well, Rounding::same(2.0), COLOR_INSET);
     let seg_h = (bottom - top) / METER_SEGMENTS as f32;
-    let col_w = (METER_WIDTH - 6.0) / 2.0;
+    let col_w = (width - 6.0) / 2.0;
     for (ch, peak) in peaks.iter().enumerate() {
         let level = meter_fraction(*peak);
         let x0 = rect.left() + 2.0 + ch as f32 * (col_w + 2.0);
@@ -612,7 +666,11 @@ mod tests {
         assert_eq!(g.inner, 214.0);
         assert!((crate::NUM_HW_BUSES as f32 * g.led_route_hardware.x + (crate::NUM_HW_BUSES - 1) as f32 * ITEM_SPACING - g.left).abs() < 1e-4);
         assert!((crate::NUM_VIRT_BUSES as f32 * g.led_route_virtual.x + (crate::NUM_VIRT_BUSES - 1) as f32 * ITEM_SPACING - g.left).abs() < 1e-4);
-        assert!((2.0 * KNOB_WIDTH + g.xy_pad.x + 2.0 * ITEM_SPACING - g.inner).abs() < 1e-4);
+        assert_eq!(g.xy_pad.x, g.inner, "the colour pad spans the column");
+        assert!((2.0 * KNOB_WIDTH + 2.0 * g.fx_led.x + 3.0 * ITEM_SPACING - g.inner).abs() < 1e-4);
+        assert!((FADER_WIDTH + g.strip_meter + 2.0 * g.side_button.x + 3.0 * ITEM_SPACING - g.inner).abs() < 1e-4);
+        assert!((KNOB_WIDTH + FADER_WIDTH + g.bus_meter + g.bus_button.x + 3.0 * ITEM_SPACING - g.inner).abs() < 1e-4);
+        assert!(g.strip_meter >= METER_WIDTH && g.bus_meter >= METER_WIDTH);
         assert!((3.0 * g.pad.x + 2.0 * PAD_SPACING - g.left).abs() < 1e-4);
     }
 
@@ -684,10 +742,40 @@ mod tests {
         assert!(g.led_route_virtual.x >= MIN_LED_ROUTE_WIDTH);
     }
 
+    /// At the narrowest column the app supports, both button columns and both meters must stay
+    /// wide enough to click and read: no button collapses below 40 px, no meter below
+    /// `METER_WIDTH`.
+    #[test]
+    fn geometry_at_min_column_width_keeps_buttons_and_meters_usable() {
+        let g = Geometry::for_column(MIN_COLUMN_WIDTH);
+        assert!(g.side_button.x >= 40.0, "side_button.x too narrow: {}", g.side_button.x);
+        assert!(g.bus_button.x >= 40.0, "bus_button.x too narrow: {}", g.bus_button.x);
+        assert!(g.strip_meter >= METER_WIDTH, "strip_meter too narrow: {}", g.strip_meter);
+        assert!(g.bus_meter >= METER_WIDTH, "bus_meter too narrow: {}", g.bus_meter);
+    }
+
+    /// A very wide window must not let the side buttons balloon past their cap; the meter should
+    /// absorb the spare width instead.
+    #[test]
+    fn side_button_never_exceeds_its_max_width_at_very_wide_columns() {
+        let g = Geometry::for_column(4000.0);
+        assert!(g.side_button.x <= SIDE_BUTTON_MAX_WIDTH + 1e-4, "side_button.x grew past its cap: {}", g.side_button.x);
+        assert!(g.bus_button.x <= SIDE_BUTTON_MAX_WIDTH + 1e-4, "bus_button.x grew past its cap: {}", g.bus_button.x);
+    }
+
+    /// `MIN_WINDOW.y` must stay exactly the sum the doc comment claims: chrome, both section
+    /// captions and gaps, both fixed column heights, and both faders at their floor.
+    #[test]
+    fn min_window_y_matches_its_derived_formula() {
+        let expected =
+            CHROME_HEIGHT + 2.0 * (SECTION_GAP + SECTION_CAPTION_HEIGHT) + INPUT_FIXED_HEIGHT + OUTPUT_FIXED_HEIGHT + 2.0 * FADER_MIN_HEIGHT;
+        assert_eq!(MIN_WINDOW.y, expected);
+    }
+
     #[test]
     fn fader_height_fills_the_row_and_stays_within_its_limits() {
-        assert_eq!(fader_height_in(334.0, INPUT_FIXED_HEIGHT), 150.0);
-        assert_eq!(fader_height_in(234.0, OUTPUT_FIXED_HEIGHT), 150.0);
+        assert_eq!(fader_height_in(INPUT_FIXED_HEIGHT + 150.0, INPUT_FIXED_HEIGHT), 150.0);
+        assert_eq!(fader_height_in(OUTPUT_FIXED_HEIGHT + 150.0, OUTPUT_FIXED_HEIGHT), 150.0);
         assert_eq!(fader_height_in(50.0, INPUT_FIXED_HEIGHT), FADER_MIN_HEIGHT);
         assert_eq!(fader_height_in(5000.0, INPUT_FIXED_HEIGHT), FADER_MAX_HEIGHT);
     }

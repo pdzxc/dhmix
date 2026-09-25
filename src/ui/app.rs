@@ -242,7 +242,7 @@ impl App {
             };
             return;
         }
-        let default_name = format!("streammix-{}.wav", unix_stamp());
+        let default_name = format!("dhmix-{}.wav", unix_stamp());
         let Some(path) = rfd::FileDialog::new().set_file_name(&default_name).add_filter("WAV", &["wav"]).save_file() else {
             return;
         };
@@ -268,14 +268,20 @@ impl App {
     fn top_bar(&mut self, ui: &mut Ui) {
         ui.add_space(widgets::SECTION_GAP);
         ui.horizontal_wrapped(|ui| {
-            ui.label(egui::RichText::new("STREAMMIX").heading().color(widgets::COLOR_HEADING));
+            widgets::logo(ui);
             widgets::hint(ui, "mixer for streaming");
             ui.separator();
             for (workspace, label) in Workspace::NAVIGATION {
                 ui.selectable_value(&mut self.workspace, workspace, label);
             }
             ui.separator();
-            if ui.button("Load preset…").clicked() {
+            widgets::caption(ui, "DEVICES");
+            if ui.button("Refresh").on_hover_text("Rescan after plugging in a device or installing a cable").clicked() {
+                self.refresh_devices();
+            }
+            ui.separator();
+            widgets::caption(ui, "PRESET");
+            if ui.button("Load…").on_hover_text("Load a saved mixer setup").clicked() {
                 if let Some(path) = rfd::FileDialog::new().add_filter("Preset", &PRESET_FILTER).pick_file() {
                     match Preset::load(&path) {
                         Ok(p) => {
@@ -286,32 +292,24 @@ impl App {
                     }
                 }
             }
-            if ui.button("Save preset…").clicked() {
-                if let Some(path) = rfd::FileDialog::new().set_file_name("streammix.json").add_filter("Preset", &PRESET_FILTER).save_file() {
+            if ui.button("Save…").on_hover_text("Save the current mixer setup to a file").clicked() {
+                if let Some(path) = rfd::FileDialog::new().set_file_name("dhmix.json").add_filter("Preset", &PRESET_FILTER).save_file() {
                     self.status = match self.preset().save(&path) {
                         Ok(()) => format!("Saved {}", path.display()),
                         Err(e) => format!("Save failed: {e:#}"),
                     };
                 }
             }
-            if ui.button("Refresh devices").on_hover_text("Rescan after plugging in a device or installing a cable").clicked() {
-                self.refresh_devices();
-            }
-            let apps_label = if self.apps.open { "Applications ▾" } else { "Applications" };
-            if ui.button(apps_label).on_hover_text("See which apps play or record audio and move them between devices").clicked() {
-                self.apps.open = !self.apps.open;
-            }
-            let player_label = if self.player_open { "Player ▾" } else { "Player" };
-            if ui.button(player_label).on_hover_text("Soundboard and music player, in its own window").clicked() {
-                self.player_open = !self.player_open;
-            }
-            if ui.button("Help").on_hover_text("What inputs, outputs and the A / B buttons mean").clicked() {
-                self.help.open = !self.help.open;
-            }
             ui.separator();
+            widgets::caption(ui, "WINDOWS");
+            widgets::led(ui, &mut self.player_open, "PLAYER", widgets::COLOR_HEADING, widgets::TOP_TOGGLE_SIZE, "Soundboard and music player, in its own window");
+            widgets::led(ui, &mut self.apps.open, "APPLICATIONS", widgets::COLOR_HEADING, widgets::TOP_TOGGLE_SIZE, "Which apps play or record audio, and where to send them");
+            widgets::led(ui, &mut self.help.open, "HELP", widgets::COLOR_HEADING, widgets::TOP_TOGGLE_SIZE, "What inputs, outputs and the A / B buttons mean");
+            ui.separator();
+            widgets::caption(ui, "RECORD");
             self.record_controls(ui);
             ui.separator();
-            widgets::hint(ui, "Mute hotkey");
+            widgets::caption(ui, "MUTE HOTKEY");
             egui::ComboBox::from_id_salt("hotkey-strip").width(widgets::SMALL_COMBO_WIDTH).selected_text(strip_name(self.hotkey_strip)).show_ui(ui, |ui| {
                 for i in 0..NUM_STRIPS {
                     ui.selectable_value(&mut self.hotkey_strip, i, strip_name(i));
@@ -348,7 +346,6 @@ impl App {
     }
 
     fn record_controls(&mut self, ui: &mut Ui) {
-        widgets::hint(ui, "Record");
         egui::ComboBox::from_id_salt("record-bus").width(widgets::SMALL_COMBO_WIDTH).selected_text(bus_name(self.record_bus)).show_ui(ui, |ui| {
             for b in 0..NUM_BUSES {
                 ui.selectable_value(&mut self.record_bus, b, bus_name(b));
@@ -409,7 +406,7 @@ impl App {
     fn devices_view(&mut self, ui: &mut Ui) {
         widgets::banner(ui, |ui| {
             ui.label(egui::RichText::new(format!("Device setup: {}/{} essentials connected", self.setup_progress(), SETUP_STEPS)).strong());
-            widgets::hint(ui, "Assign sources first, then choose where each mix leaves StreamMix. Changes take effect immediately.");
+            widgets::hint(ui, "Assign sources first, then choose where each mix leaves DHMIX. Changes take effect immediately.");
         });
 
         let inputs = self.devices.inputs.clone();

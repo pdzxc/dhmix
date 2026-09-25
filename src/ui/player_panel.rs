@@ -1,6 +1,6 @@
 //! Soundboard pads and the music player, shown at the top of the PLAYER strip.
 
-use super::strip_panel::{fine_tune_window, fx_row, pan_slider_width, routing_rows, state_row};
+use super::strip_panel::{fine_tune_window, fx_row, pan_row, pan_slider_width, routing_rows, state_row};
 use super::widgets::{self, ColumnFrame, Geometry, COLOR_ACTIVE, COLOR_ASSIGNED, PAD_SPACING};
 use crate::engine::player::{load_clip, Clip, PlayerCommand, PlayerStatus};
 use crate::engine::{Meters, StripSettings};
@@ -115,17 +115,11 @@ impl PlayerPanel {
                     ui.set_opacity(0.45);
                 }
                 widgets::fader(ui, &mut settings.gain_db, fader_height);
-                widgets::meter(ui, meters.strips[PLAYER_STRIP].load(), fader_height);
+                widgets::meter(ui, meters.strips[PLAYER_STRIP].load(), fader_height, widgets::METER_WIDTH);
             });
         });
-        ui.horizontal(|ui| {
-            ui.spacing_mut().slider_width = pan_slider_width(geo.inner);
-            ui.add(egui::Slider::new(&mut settings.pan, -1.0..=1.0).show_value(false).text("pan"))
-                .on_hover_text("Left / right balance. Double-click to centre.");
-            if ui.small_button("Fine-tune…").on_hover_text("All effect parameters in a separate window").clicked() {
-                *fine_tune_open = !*fine_tune_open;
-            }
-        });
+        pan_row(ui, &mut settings.pan, geo.inner);
+        widgets::led(ui, fine_tune_open, "FINE-TUNE", widgets::COLOR_HEADING, geo.fine_tune_button, "All effect parameters in a separate window.");
         if let Some(err) = &self.last_error {
             widgets::error_label(ui, err);
         }

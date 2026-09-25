@@ -10,5 +10,5 @@ fn main() -> eframe::Result {
             .with_min_inner_size([streammix::ui::MIN_WINDOW.x, streammix::ui::MIN_WINDOW.y]),
         ..Default::default()
     };
-    eframe::run_native("StreamMix", options, Box::new(|cc| Ok(Box::new(streammix::ui::App::new(cc)))))
+    eframe::run_native("DHMIX", options, Box::new(|cc| Ok(Box::new(streammix::ui::App::new(cc)))))
 }

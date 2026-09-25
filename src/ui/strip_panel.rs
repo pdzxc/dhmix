@@ -106,49 +106,48 @@ pub struct StripView<'a> {
 }
 
 impl StripView<'_> {
+    /// Console order, top to bottom: colour pad, knobs with effect LEDs, pan, then the fader with
+    /// its meter and the two button columns (routes; mono / solo / mute).
     pub fn show(&mut self, ui: &mut Ui) {
         let silenced = self.settings.mute || (self.any_solo && !self.settings.solo);
+        widgets::section(ui, "Colour");
+        self.colour_pad(ui);
+        widgets::section(ui, "Effects");
+        self.knobs_and_leds(ui);
+        pan_row(ui, &mut self.settings.pan, self.geo.inner);
+        widgets::section(ui, "Level and send to");
+        let geo = self.geo;
         ui.horizontal_top(|ui| {
-            ui.vertical(|ui| {
-                ui.set_width(self.geo.left);
-                self.left_column(ui);
-            });
             ui.scope(|ui| {
                 if silenced {
                     ui.set_opacity(0.45);
                 }
                 widgets::fader(ui, &mut self.settings.gain_db, self.fader_height);
-                widgets::meter(ui, self.meters.strips[self.index].load(), self.fader_height);
+                widgets::meter(ui, self.meters.strips[self.index].load(), self.fader_height, geo.strip_meter);
             });
-        });
-        self.knobs_and_pad(ui);
-        ui.horizontal(|ui| {
-            ui.spacing_mut().slider_width = pan_slider_width(self.geo.inner);
-            ui.add(egui::Slider::new(&mut self.settings.pan, -1.0..=1.0).show_value(false).text("pan"))
-                .on_hover_text("Left / right balance. Double-click to centre.");
-            if ui.small_button("Fine-tune…").on_hover_text("All effect parameters in a separate window").clicked() {
-                *self.fine_tune_open = !*self.fine_tune_open;
-            }
+            ui.vertical(|ui| {
+                ui.set_width(geo.side_button.x);
+                routing_column(ui, &mut self.settings.routing, self.index, geo);
+            });
+            ui.vertical(|ui| {
+                ui.set_width(geo.side_button.x);
+                state_column(ui, self.settings, geo, self.fine_tune_open);
+            });
         });
         self.fine_tune_window(ui.ctx());
     }
 
-    fn left_column(&mut self, ui: &mut Ui) {
-        let geo = self.geo;
-        widgets::section(ui, "Send to");
-        routing_rows(ui, &mut self.settings.routing, self.index, geo);
-        ui.add_space(widgets::SECTION_GAP);
-        state_row(ui, self.settings, geo);
-        ui.add_space(widgets::SECTION_GAP);
+    fn colour_pad(&mut self, ui: &mut Ui) {
         let s = &mut self.settings;
-        ui.horizontal(|ui| {
-            widgets::led(ui, &mut s.denoise, "DENOISE", COLOR_ACTIVE, geo.led_pair, "Remove fans, hum and keyboard noise (RNNoise).");
-            widgets::led(ui, &mut s.eq.enabled, "EQ", COLOR_ACTIVE, geo.led_pair, "Shape the tone: bass, mid, treble, low cut.");
-        });
-        fx_row(ui, s, geo);
+        let mut tilt = tone_tilt(&s.eq);
+        let mut echo = echo_amount(&s.echo);
+        if widgets::xy_pad(ui, &mut tilt, &mut echo, self.geo.xy_pad, ["Lo", "Hi", "ECHO"], "Colour pad: left is warm, right is bright; up adds echo. Double-click resets.") {
+            set_tone_tilt(&mut s.eq, tilt);
+            set_echo_amount(&mut s.echo, echo);
+        }
     }
 
-    fn knobs_and_pad(&mut self, ui: &mut Ui) {
+    fn knobs_and_leds(&mut self, ui: &mut Ui) {
         let geo = self.geo;
         let s = &mut self.settings;
         ui.horizontal_top(|ui| {
@@ -160,12 +159,17 @@ impl StripView<'_> {
             if widgets::knob(ui, &mut gate, KNOB_RANGE, 0.0, "GATE", "Close the mic when you are not talking.") {
                 set_gate_amount(&mut s.gate, gate);
             }
-            let mut tilt = tone_tilt(&s.eq);
-            let mut echo = echo_amount(&s.echo);
-            if widgets::xy_pad(ui, &mut tilt, &mut echo, geo.xy_pad, ["Lo", "Hi", "ECHO"], "Colour pad: left is warm, right is bright; up adds echo. Double-click resets.") {
-                set_tone_tilt(&mut s.eq, tilt);
-                set_echo_amount(&mut s.echo, echo);
-            }
+            ui.vertical(|ui| {
+                ui.add_space(widgets::SECTION_GAP);
+                ui.horizontal(|ui| {
+                    widgets::led(ui, &mut s.denoise, "DENOISE", COLOR_ACTIVE, geo.fx_led, "Remove fans, hum and keyboard noise (RNNoise).");
+                    widgets::led(ui, &mut s.eq.enabled, "EQ", COLOR_ACTIVE, geo.fx_led, "Shape the tone: bass, mid, treble, low cut.");
+                });
+                ui.horizontal(|ui| {
+                    widgets::led(ui, &mut s.echo.enabled, "ECHO", COLOR_ACTIVE, geo.fx_led, "Repeating delay effect.");
+                    widgets::led(ui, &mut s.reverb.enabled, "REVERB", COLOR_ACTIVE, geo.fx_led, "Room ambience.");
+                });
+            });
         });
     }
 
@@ -233,6 +237,34 @@ pub fn pan_slider_width(inner: f32) -> f32 {
 
 /// Room the "pan" label and the "Fine-tune…" button take in the pan row.
 const PAN_ROW_FIXED: f32 = 132.0;
+
+/// Room the "pan" label alone takes when the slider has the row to itself.
+const PAN_LABEL_WIDTH: f32 = 36.0;
+
+/// A pan slider that really resets to centre on double-click (egui's slider does not by itself).
+pub fn pan_row(ui: &mut Ui, pan: &mut f32, inner: f32) {
+    ui.spacing_mut().slider_width = inner - PAN_LABEL_WIDTH;
+    let response = ui.add(egui::Slider::new(pan, -1.0..=1.0).show_value(false).text("pan")).on_hover_text("Left / right balance. Double-click to centre.");
+    if response.double_clicked() {
+        *pan = 0.0;
+    }
+}
+
+/// Routes stacked beside the fader: A1.. in green, then B1.. in blue.
+pub fn routing_column(ui: &mut Ui, routing: &mut [bool; NUM_BUSES], strip: usize, geo: Geometry) {
+    for (b, on) in routing.iter_mut().enumerate() {
+        let (color, tip) = if b < NUM_HW_BUSES { (COLOR_ACTIVE, TIP_HARDWARE_ROUTE) } else { (COLOR_VIRTUAL, TIP_VIRTUAL_ROUTE) };
+        ui.push_id((strip, b), |ui| widgets::led(ui, on, &bus_name(b), color, geo.side_button, tip));
+    }
+}
+
+/// MONO / SOLO / MUTE and the fine-tune opener, stacked beside the routes.
+pub fn state_column(ui: &mut Ui, s: &mut StripSettings, geo: Geometry, fine_tune_open: &mut bool) {
+    widgets::led(ui, &mut s.mono, "MONO", COLOR_ACTIVE, geo.side_button, "Sum left and right into the centre. Use for a single microphone.");
+    widgets::led(ui, &mut s.solo, "SOLO", COLOR_SOLO, geo.side_button, "Hear only soloed strips.");
+    widgets::led(ui, &mut s.mute, "MUTE", COLOR_MUTE, geo.side_button, "Silence this strip on every bus.");
+    widgets::led(ui, fine_tune_open, "FINE-TUNE", widgets::COLOR_HEADING, geo.fine_tune_button, "All effect parameters in a separate window.");
+}
 
 /// MONO / SOLO / MUTE.
 pub fn state_row(ui: &mut Ui, s: &mut StripSettings, geo: Geometry) {

@@ -1,6 +1,7 @@
-# StreamMix
+# DHMIX
 
 A free, open Voicemeeter-Potato-style mixer for streaming on Windows. No licence, no nag screen.
+(The crate and executable are still named `streammix`; the app presents itself as DHMIX.)
 
 ![StreamMix running on macOS during development](screenshot-macos.png)
 

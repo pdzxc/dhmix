@@ -1,4 +1,4 @@
-//! StreamMix: a free Voicemeeter-style mixer for streaming.
+//! DHMIX (crate `streammix`): a free Voicemeeter-style mixer for streaming.
 //!
 //! Layout:
 //! - `dsp`    – pure signal-processing blocks (EQ, compressor, gate, echo, reverb, denoiser, limiter).

@@ -15,7 +15,7 @@ const SECTIONS: &[(&str, &[&str])] = &[
         &[
             "Hardware input 1, 2, 3 are real things plugged into your PC: your microphone, a second mic, a guitar or a console line. Pick the device under the name.",
             "Virtual input 1 and 2 are programs on your PC: the game, Discord, Spotify. They cannot plug in with a wire, so they play into a virtual cable, and the cable's other end shows up here.",
-            "Player is music and sound clips you load into StreamMix itself.",
+            "Player is music and sound clips you load into DHMIX itself.",
         ],
     ),
     (
@@ -60,7 +60,7 @@ impl HelpPanel {
             return;
         }
         let mut open = self.open;
-        egui::Window::new("How StreamMix works").open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
+        egui::Window::new("How DHMIX works").open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
             ui.set_max_width(HELP_WIDTH);
             for (heading, paragraphs) in SECTIONS {
                 widgets::section(ui, heading);

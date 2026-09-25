@@ -3,6 +3,7 @@
 mod app;
 mod apps_panel;
 mod bus_panel;
+mod help_panel;
 mod player_panel;
 mod strip_panel;
 mod widgets;

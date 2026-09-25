@@ -71,6 +71,14 @@ only, or Discord to the stream at a lower level. VB-CABLE plus its A+B pack give
 
 Files are decoded fully into memory when assigned, so a 5-minute track uses roughly 110 MB while loaded.
 
+## Help inside the app
+
+The **Help** button in the top bar opens a plain-language guide to inputs, outputs and the A / B
+buttons (A means "to my ears", B means "to the stream or call"). It opens by itself the first time
+you launch StreamMix.
+
+![The guide on first launch](screenshot-help.png)
+
 ## Recording
 
 Pick a bus in the top bar and press "● Rec". The file is 32-bit float WAV at 48 kHz.

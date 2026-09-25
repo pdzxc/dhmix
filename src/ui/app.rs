@@ -2,6 +2,7 @@
 
 use super::apps_panel::AppsPanel;
 use super::bus_panel::BusView;
+use super::help_panel::HelpPanel;
 use super::player_panel::PlayerPanel;
 use super::strip_panel::StripView;
 use super::widgets::{self, ColumnFrame, Geometry, COLOR_ACTIVE, COLOR_ASSIGNED, COLOR_MUTE, COLOR_VIRTUAL};
@@ -20,6 +21,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const STORAGE_KEY: &str = "streammix.preset";
+/// Set once the guide has been shown, so it only opens by itself on the very first launch.
+const HELP_SEEN_KEY: &str = "streammix.help_seen";
 const PRESET_FILTER: [&str; 1] = ["json"];
 
 /// Console-style panel titles.
@@ -57,6 +60,7 @@ pub struct App {
     hotkey_error: Option<String>,
     status: String,
     apps: AppsPanel,
+    help: HelpPanel,
     fine_tune_open: [bool; NUM_STRIPS],
     /// Per-column fader heights, nudged every frame so each panel fills its row.
     strip_fader_height: [f32; NUM_STRIPS],
@@ -72,6 +76,7 @@ impl App {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         widgets::apply_theme(&cc.egui_ctx);
         let preset: Preset = cc.storage.and_then(|s| eframe::get_value(s, STORAGE_KEY)).unwrap_or_default();
+        let help_seen: bool = cc.storage.and_then(|s| eframe::get_value(s, HELP_SEEN_KEY)).unwrap_or(false);
 
         let settings = Arc::new(Mutex::new(preset.mix));
         let meters = Arc::new(Meters::default());
@@ -119,6 +124,7 @@ impl App {
             hotkey_error,
             status: String::new(),
             apps: AppsPanel::default(),
+            help: HelpPanel { open: !help_seen },
             fine_tune_open: [false; NUM_STRIPS],
             strip_fader_height: [widgets::FADER_MIN_HEIGHT; NUM_STRIPS],
             bus_fader_height: [widgets::FADER_MIN_HEIGHT; NUM_BUSES],
@@ -231,6 +237,9 @@ impl App {
             let apps_label = if self.apps.open { "Applications ▾" } else { "Applications" };
             if ui.button(apps_label).on_hover_text("See which apps play or record audio and move them between devices").clicked() {
                 self.apps.open = !self.apps.open;
+            }
+            if ui.button("Help").on_hover_text("What inputs, outputs and the A / B buttons mean").clicked() {
+                self.help.open = !self.help.open;
             }
             ui.separator();
             self.record_controls(ui);
@@ -417,11 +426,13 @@ impl eframe::App for App {
             }
         });
         self.apps.show(ctx, &self.io.settings);
+        self.help.show(ctx);
         ctx.request_repaint_after(Duration::from_millis(33));
     }
 
     fn save(&mut self, storage: &mut dyn eframe::Storage) {
         eframe::set_value(storage, STORAGE_KEY, &self.preset());
+        eframe::set_value(storage, HELP_SEEN_KEY, &true);
     }
 }
 

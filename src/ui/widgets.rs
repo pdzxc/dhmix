@@ -13,35 +13,112 @@ pub const PANEL_PADDING: f32 = 8.0;
 pub const PANEL_RADIUS: f32 = 4.0;
 pub const CONTROL_RADIUS: f32 = 3.0;
 pub const SECTION_GAP: f32 = 6.0;
-pub const FADER_HEIGHT: f32 = 168.0;
 pub const FADER_WIDTH: f32 = 50.0;
 pub const METER_WIDTH: f32 = 22.0;
 pub const METER_SEGMENTS: usize = 30;
+/// Faders stretch with the window between these.
+pub const FADER_MIN_HEIGHT: f32 = 110.0;
+pub const FADER_MAX_HEIGHT: f32 = 420.0;
 pub const KNOB_SIZE: f32 = 36.0;
-/// Routing LEDs, five per row; they set the strip's left column width.
-pub const LED_ROUTE: Vec2 = Vec2::new(22.0, 22.0);
-/// Mono / solo / mute, three per row.
-pub const LED_TRIPLE: Vec2 = Vec2::new(38.0, 22.0);
-/// Effect LEDs, two per row.
-pub const LED_PAIR: Vec2 = Vec2::new(59.0, 22.0);
-/// Left column of a strip: routing, effects, mono/solo/mute.
-pub const STRIP_LEFT_WIDTH: f32 = 5.0 * LED_ROUTE.x + 4.0 * ITEM_SPACING;
-/// Inner width of a strip: left column, gap, fader and meter.
-pub const STRIP_INNER: f32 = STRIP_LEFT_WIDTH + ITEM_SPACING + FADER_WIDTH + METER_WIDTH;
-pub const STRIP_WIDTH: f32 = STRIP_INNER + 2.0 * PANEL_PADDING;
-pub const PLAYER_WIDTH: f32 = 312.0;
-pub const DETAIL_SLIDER_WIDTH: f32 = 96.0;
-pub const PLAYER_SLIDER_WIDTH: f32 = 190.0;
-pub const PAD_SLIDER_WIDTH: f32 = 130.0;
+/// Outer width of a knob widget.
+pub const KNOB_WIDTH: f32 = KNOB_SIZE + 12.0;
+pub const LED_HEIGHT: f32 = 22.0;
+/// Padding inside an LED; small so short labels fit narrow routing LEDs.
+pub const LED_PADDING: f32 = 2.0;
 pub const SMALL_COMBO_WIDTH: f32 = 96.0;
-pub const PAD_SIZE: Vec2 = Vec2::new(92.0, 34.0);
-pub const PAD_SPACING: f32 = 5.0;
+/// The "Send to" picker in the Applications window; wide enough for a device plus its meaning.
+pub const ROUTE_COMBO_WIDTH: f32 = 230.0;
+/// Sliders in the floating fine-tune window, which has room to spare.
+pub const FINE_TUNE_SLIDER_WIDTH: f32 = 144.0;
+/// Column and row gaps of the Applications table.
+pub const TABLE_SPACING: Vec2 = Vec2::new(12.0, 6.0);
+pub const PAD_HEIGHT: f32 = 26.0;
+pub const PAD_SPACING: f32 = 4.0;
+pub const XY_PAD_HEIGHT: f32 = 70.0;
+/// Share of the mixer area given to the input row; outputs get the rest.
+pub const INPUT_ROW_SHARE: f32 = 0.58;
+/// Height of a `section` caption row, used when splitting the window between the two rows.
+pub const SECTION_CAPTION_HEIGHT: f32 = 16.0;
+/// Narrowest routing LED that still shows "A1" legibly.
+pub const MIN_LED_ROUTE_WIDTH: f32 = 20.0;
+/// Narrowest column, derived so five routing LEDs at their minimum fit beside the fader and meter.
+pub const MIN_COLUMN_WIDTH: f32 =
+    5.0 * MIN_LED_ROUTE_WIDTH + 4.0 * ITEM_SPACING + ITEM_SPACING + FADER_WIDTH + METER_WIDTH + 2.0 * PANEL_PADDING;
+/// Fixed content of an input column besides its fader: header, device, knobs, pad, pan row.
+pub const INPUT_FIXED_HEIGHT: f32 = 230.0;
+/// Fixed content of an output column besides its fader: header, device, tone knobs, LEDs.
+pub const OUTPUT_FIXED_HEIGHT: f32 = 110.0;
+/// Top bar plus the first-run banner.
+pub const CHROME_HEIGHT: f32 = 140.0;
+/// Smallest window: seven columns at their minimum width, and both rows at their minimum height.
+pub const MIN_WINDOW: Vec2 = Vec2::new(
+    crate::NUM_STRIPS as f32 * (MIN_COLUMN_WIDTH + ITEM_SPACING) + 2.0 * SECTION_GAP + ITEM_SPACING,
+    CHROME_HEIGHT + 2.0 * (SECTION_GAP + SECTION_CAPTION_HEIGHT) + INPUT_FIXED_HEIGHT + OUTPUT_FIXED_HEIGHT + 2.0 * FADER_MIN_HEIGHT,
+);
 
 pub const FADER_MIN_DB: f32 = -60.0;
 pub const FADER_MAX_DB: f32 = 12.0;
 pub const METER_FLOOR_DB: f32 = -60.0;
 pub const METER_GREEN_TOP_DB: f32 = -18.0;
 pub const METER_AMBER_TOP_DB: f32 = -6.0;
+
+/// Sizes of one column's controls, derived from the width the window gives it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Geometry {
+    /// Width inside the panel padding.
+    pub inner: f32,
+    /// Width left of the fader and meter.
+    pub left: f32,
+    pub led_route: Vec2,
+    pub led_triple: Vec2,
+    pub led_pair: Vec2,
+    /// The tone / echo pad beside the two knobs.
+    pub xy_pad: Vec2,
+    /// One soundboard pad in a three-column grid that spans `left`.
+    pub pad: Vec2,
+}
+
+impl Geometry {
+    pub fn for_column(width: f32) -> Self {
+        // Clamped on purpose: if a window manager ignores the minimum size, controls keep their
+        // legible size and the panel clips them at its edge instead of shrinking them to nothing.
+        let inner = width.max(MIN_COLUMN_WIDTH) - 2.0 * PANEL_PADDING;
+        let left = inner - FADER_WIDTH - METER_WIDTH - ITEM_SPACING;
+        Self {
+            inner,
+            left,
+            led_route: Vec2::new((left - 4.0 * ITEM_SPACING) / 5.0, LED_HEIGHT),
+            led_triple: Vec2::new((left - 2.0 * ITEM_SPACING) / 3.0, LED_HEIGHT),
+            led_pair: Vec2::new((left - ITEM_SPACING) / 2.0, LED_HEIGHT),
+            xy_pad: Vec2::new(inner - 2.0 * KNOB_WIDTH - 2.0 * ITEM_SPACING, XY_PAD_HEIGHT),
+            pad: Vec2::new((left - 2.0 * PAD_SPACING) / 3.0, PAD_HEIGHT),
+        }
+    }
+}
+
+/// Width of each of `count` equal columns across `available`, leaving one spacing spare so the
+/// last column never touches the window edge.
+pub fn column_width(available: f32, count: usize) -> f32 {
+    (available - count as f32 * ITEM_SPACING) / count as f32
+}
+
+/// What one column hands its panel each frame.
+#[derive(Clone, Copy, Debug)]
+pub struct ColumnFrame {
+    pub geo: Geometry,
+    pub fader_height: f32,
+    pub any_solo: bool,
+}
+
+/// Nudges a stretchable height towards filling `target`, given what the panel measured last frame.
+pub fn stretch_towards(current: f32, measured: f32, target: f32) -> f32 {
+    let diff = target - measured;
+    if diff.abs() < 1.0 {
+        current
+    } else {
+        (current + diff).clamp(FADER_MIN_HEIGHT, FADER_MAX_HEIGHT)
+    }
+}
 
 // ---- Colour tokens ---------------------------------------------------------------------------
 
@@ -54,7 +131,7 @@ pub const COLOR_STRIP_STROKE: Color32 = Color32::from_rgb(0x3d, 0x41, 0x4a);
 pub const COLOR_INSET: Color32 = Color32::from_rgb(0x14, 0x16, 0x19);
 pub const COLOR_HANDLE: Color32 = Color32::from_rgb(0xc9, 0xce, 0xd6);
 pub const COLOR_TEXT: Color32 = Color32::from_rgb(0xd8, 0xdc, 0xe3);
-pub const COLOR_TEXT_MUTED: Color32 = Color32::from_rgb(0x80, 0x88, 0x95);
+pub const COLOR_TEXT_MUTED: Color32 = Color32::from_rgb(0x9a, 0xa3, 0xb0);
 /// Panel headings, the console's signature cyan.
 pub const COLOR_HEADING: Color32 = Color32::from_rgb(0x8f, 0xd3, 0xea);
 /// Hardware routes and "on" states.
@@ -130,12 +207,18 @@ fn framed(fill: Color32, stroke: Color32) -> egui::Frame {
         .inner_margin(Margin::same(PANEL_PADDING))
 }
 
-/// One strip or bus: a fixed-width console panel.
-pub fn panel(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) {
-    framed(COLOR_STRIP, COLOR_STRIP_STROKE).show(ui, |ui| {
-        ui.set_width(width);
-        ui.vertical(add);
-    });
+/// One strip or bus: a console panel whose outer width is exactly `width`. Returns its rect so the
+/// caller can measure how tall the content came out.
+pub fn panel(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) -> Rect {
+    framed(COLOR_STRIP, COLOR_STRIP_STROKE)
+        .show(ui, |ui| {
+            let inner = width - 2.0 * PANEL_PADDING;
+            ui.set_width(inner);
+            ui.set_max_width(inner);
+            ui.vertical(add);
+        })
+        .response
+        .rect
 }
 
 /// Full-width notice, used for first-run guidance.
@@ -192,7 +275,11 @@ pub fn led(ui: &mut Ui, on: &mut bool, label: &str, color: Color32, size: Vec2, 
         .stroke(Stroke::new(1.0_f32, stroke))
         .rounding(Rounding::same(CONTROL_RADIUS))
         .min_size(size);
-    let mut response = ui.add(button);
+    // Tight padding so the LED is exactly `size`, not text plus the theme's button padding.
+    let mut response = ui.scope(|ui| {
+        ui.spacing_mut().button_padding = Vec2::new(LED_PADDING, LED_PADDING);
+        ui.add(button)
+    }).inner;
     if *on {
         ui.painter().rect_stroke(response.rect.expand(1.5), Rounding::same(CONTROL_RADIUS + 1.0), Stroke::new(1.0_f32, color.gamma_multiply(0.3)));
     }
@@ -234,7 +321,7 @@ fn arc(painter: &egui::Painter, center: Pos2, radius: f32, from: f32, to: f32, s
 pub fn knob(ui: &mut Ui, value: &mut f32, range: RangeInclusive<f32>, reset: f32, label: &str, tip: &str) -> bool {
     let (min, max) = (*range.start(), *range.end());
     debug_assert!(max > min, "knob range must not be empty");
-    let size = Vec2::new(KNOB_SIZE + 12.0, KNOB_SIZE + 14.0);
+    let size = Vec2::new(KNOB_WIDTH, KNOB_SIZE + 14.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     if max <= min {
         return false;
@@ -280,11 +367,11 @@ const FADER_TICKS: [(f32, &str); 8] = [
 ];
 
 /// Vertical fader with a dB ruler and a rectangular cap. Double-click resets to 0 dB.
-pub fn fader(ui: &mut Ui, value: &mut f32) -> bool {
-    let size = Vec2::new(FADER_WIDTH, FADER_HEIGHT + 16.0);
+pub fn fader(ui: &mut Ui, value: &mut f32, height: f32) -> bool {
+    let size = Vec2::new(FADER_WIDTH, height + 16.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let track_top = rect.top() + 8.0;
-    let track_bottom = rect.top() + FADER_HEIGHT - 8.0;
+    let track_bottom = rect.top() + height - 8.0;
     let span = FADER_MAX_DB - FADER_MIN_DB;
     let to_y = |db: f32| track_bottom - (db - FADER_MIN_DB) / span * (track_bottom - track_top);
     let mut changed = false;
@@ -342,11 +429,11 @@ fn segment_color(fraction: f32) -> Color32 {
 }
 
 /// Two columns of LED segments, aligned with the fader track beside them.
-pub fn meter(ui: &mut Ui, peaks: [f32; 2]) {
-    let size = Vec2::new(METER_WIDTH, FADER_HEIGHT + 16.0);
+pub fn meter(ui: &mut Ui, peaks: [f32; 2], height: f32) {
+    let size = Vec2::new(METER_WIDTH, height + 16.0);
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let top = rect.top() + 8.0;
-    let bottom = rect.top() + FADER_HEIGHT - 8.0;
+    let bottom = rect.top() + height - 8.0;
     let well = Rect::from_min_max(Pos2::new(rect.left(), top - 2.0), Pos2::new(rect.right(), bottom + 2.0));
     let painter = ui.painter();
     painter.rect_filled(well, Rounding::same(2.0), COLOR_INSET);
@@ -367,24 +454,77 @@ pub fn meter(ui: &mut Ui, peaks: [f32; 2]) {
     }
 }
 
-/// Device picker with a "None" entry. Returns true when the choice changed.
-pub fn device_combo(ui: &mut Ui, id: impl std::hash::Hash, selected: &mut Option<String>, names: &[String], empty_label: &str, width: f32) -> bool {
+/// Two-axis pad: `x` in -1..1 (left label .. right label), `y` in 0..1 (bottom .. top label).
+/// Drag anywhere; double-click resets both to zero.
+pub fn xy_pad(ui: &mut Ui, x: &mut f32, y: &mut f32, size: Vec2, labels: [&str; 3], tip: &str) -> bool {
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
     let mut changed = false;
-    let label = selected.as_deref().unwrap_or(empty_label);
-    egui::ComboBox::from_id_salt(id).width(width).selected_text(shorten(label, 24)).show_ui(ui, |ui| {
-        if ui.selectable_label(selected.is_none(), "— none —").clicked() {
-            *selected = None;
+    if response.dragged() || response.clicked() {
+        if let Some(pos) = response.interact_pointer_pos() {
+            *x = ((pos.x - rect.center().x) / (rect.width() / 2.0 - 6.0)).clamp(-1.0, 1.0);
+            *y = ((rect.bottom() - pos.y - 6.0) / (rect.height() - 12.0)).clamp(0.0, 1.0);
             changed = true;
         }
-        for name in names {
-            let is_sel = selected.as_deref() == Some(name.as_str());
-            if ui.selectable_label(is_sel, name).clicked() {
-                *selected = Some(name.clone());
-                changed = true;
+    }
+    if response.double_clicked() {
+        *x = 0.0;
+        *y = 0.0;
+        changed = true;
+    }
+    let painter = ui.painter();
+    painter.rect_filled(rect, Rounding::same(CONTROL_RADIUS), COLOR_INSET);
+    painter.rect_stroke(rect, Rounding::same(CONTROL_RADIUS), Stroke::new(1.0_f32, COLOR_STRIP_STROKE));
+    let grid = Stroke::new(1.0_f32, COLOR_STRIP_STROKE);
+    painter.line_segment([Pos2::new(rect.center().x, rect.top() + 4.0), Pos2::new(rect.center().x, rect.bottom() - 4.0)], grid);
+    painter.line_segment([Pos2::new(rect.left() + 4.0, rect.bottom() - 6.0), Pos2::new(rect.right() - 4.0, rect.bottom() - 6.0)], grid);
+    let font = FontId::proportional(9.0);
+    painter.text(Pos2::new(rect.left() + 4.0, rect.bottom() - 3.0), Align2::LEFT_BOTTOM, labels[0], font.clone(), COLOR_TEXT_MUTED);
+    painter.text(Pos2::new(rect.right() - 4.0, rect.bottom() - 3.0), Align2::RIGHT_BOTTOM, labels[1], font.clone(), COLOR_TEXT_MUTED);
+    painter.text(Pos2::new(rect.center().x, rect.top() + 3.0), Align2::CENTER_TOP, labels[2], font, COLOR_TEXT_MUTED);
+    let dot = Pos2::new(
+        rect.center().x + *x * (rect.width() / 2.0 - 6.0),
+        rect.bottom() - 6.0 - *y * (rect.height() - 12.0),
+    );
+    painter.circle_filled(dot, 6.0, COLOR_MUTE);
+    painter.circle_stroke(dot, 6.0, Stroke::new(1.0_f32, COLOR_BG));
+    response.on_hover_text(tip);
+    changed
+}
+
+/// One combo box for every picker: shows `selected_text`, lists `choices` as (label, value,
+/// is_current) and returns the value the user clicked, if any. The list is only walked while the
+/// popup is open, so callers can hand it borrowed labels without per-frame allocation.
+pub fn choice_combo<'a, T>(
+    ui: &mut Ui,
+    id: impl std::hash::Hash,
+    width: f32,
+    selected_text: &str,
+    choices: impl IntoIterator<Item = (std::borrow::Cow<'a, str>, T, bool)>,
+) -> Option<T> {
+    let mut picked = None;
+    egui::ComboBox::from_id_salt(id).width(width).selected_text(shorten(selected_text, 24)).show_ui(ui, |ui| {
+        for (label, value, current) in choices {
+            if ui.selectable_label(current, label.as_ref()).clicked() {
+                picked = Some(value);
             }
         }
     });
-    changed
+    picked
+}
+
+/// Device picker with a "None" entry. Returns true when the choice changed.
+pub fn device_combo(ui: &mut Ui, id: impl std::hash::Hash, selected: &mut Option<String>, names: &[String], empty_label: &str, width: f32) -> bool {
+    use std::borrow::Cow;
+    let label = selected.as_deref().unwrap_or(empty_label);
+    let none = std::iter::once((Cow::Borrowed("— none —"), None, selected.is_none()));
+    let devices = names.iter().map(|n| (Cow::Borrowed(n.as_str()), Some(n.as_str()), selected.as_deref() == Some(n.as_str())));
+    match choice_combo(ui, id, width, label, none.chain(devices)) {
+        Some(value) => {
+            *selected = value.map(str::to_string);
+            true
+        }
+        None => false,
+    }
 }
 
 pub fn shorten(s: &str, max: usize) -> String {
@@ -420,6 +560,76 @@ mod tests {
         assert_eq!(segment_color(0.1), COLOR_ACTIVE);
         assert_eq!(segment_color(db_fraction(-10.0)), COLOR_SOLO);
         assert_eq!(segment_color(1.0), COLOR_CLIP);
+    }
+
+    #[test]
+    fn geometry_fills_its_column_exactly() {
+        let g = Geometry::for_column(230.0);
+        assert_eq!(g.inner, 214.0);
+        assert!((5.0 * g.led_route.x + 4.0 * ITEM_SPACING - g.left).abs() < 1e-4);
+        assert!((2.0 * KNOB_WIDTH + g.xy_pad.x + 2.0 * ITEM_SPACING - g.inner).abs() < 1e-4);
+        assert!((3.0 * g.pad.x + 2.0 * PAD_SPACING - g.left).abs() < 1e-4);
+    }
+
+    #[test]
+    fn geometry_never_shrinks_below_the_minimum_column() {
+        let g = Geometry::for_column(120.0);
+        assert_eq!(g, Geometry::for_column(MIN_COLUMN_WIDTH));
+        assert!(g.led_route.x >= MIN_LED_ROUTE_WIDTH - 1e-4, "routing LEDs stay readable: {}", g.led_route.x);
+        assert!(g.pad.x >= 30.0);
+    }
+
+    #[test]
+    fn columns_share_the_width_with_gaps_between() {
+        let w = column_width(1000.0, 7);
+        assert!((7.0 * w + 7.0 * ITEM_SPACING - 1000.0).abs() < 1e-4);
+    }
+
+    #[test]
+    fn column_width_for_a_single_column_leaves_one_spacing_spare() {
+        let w = column_width(500.0, 1);
+        assert_eq!(w, 500.0 - ITEM_SPACING);
+    }
+
+    #[test]
+    fn stretch_moves_towards_the_target_and_stays_in_range() {
+        assert_eq!(stretch_towards(150.0, 300.0, 340.0), 190.0);
+        assert_eq!(stretch_towards(150.0, 300.0, 300.5), 150.0);
+        assert_eq!(stretch_towards(150.0, 300.0, 5000.0), FADER_MAX_HEIGHT);
+        assert_eq!(stretch_towards(150.0, 300.0, 10.0), FADER_MIN_HEIGHT);
+    }
+
+    #[test]
+    fn stretch_towards_is_idempotent_once_measured_equals_target() {
+        // Once the panel has actually measured up to the target height, repeatedly asking to
+        // stretch towards that same target must not keep nudging the stored height.
+        for current in [FADER_MIN_HEIGHT, 150.0, 300.0, FADER_MAX_HEIGHT] {
+            let once = stretch_towards(current, 220.0, 220.0);
+            assert_eq!(once, current, "no movement when measured already equals target");
+            let twice = stretch_towards(once, 220.0, 220.0);
+            assert_eq!(twice, once, "applying again from a settled state must be a no-op");
+        }
+    }
+
+    /// The narrowest window the app claims to support: MIN_WINDOW.x px split across every strip and bus
+    /// column, minus the layout slack the app reserves. Every size the column derives from that
+    /// width must still be usable, and a routing LED must be wide enough to read its label.
+    #[test]
+    fn geometry_at_the_minimum_window_width_keeps_every_derived_size_usable() {
+        let column = column_width(MIN_WINDOW.x - 2.0 * SECTION_GAP, 7);
+        let g = Geometry::for_column(column);
+        assert!(g.inner > 0.0, "inner width must be positive, got {}", g.inner);
+        assert!(g.left > 0.0, "left width must be positive, got {}", g.left);
+        assert!(g.led_triple.x > 0.0);
+        assert!(g.led_pair.x > 0.0);
+        assert!(g.xy_pad.x > 0.0);
+        assert!(g.pad.x > 0.0);
+        assert!(
+            g.led_route.x >= 14.0,
+            "routing LED must stay at least 14 px wide to hold its label, got {} at column width {}",
+            g.led_route.x,
+            column,
+        );
     }
 
     #[test]

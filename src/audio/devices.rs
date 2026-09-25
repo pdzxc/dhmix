@@ -21,6 +21,21 @@ pub fn is_virtual_name(name: &str) -> bool {
     ["cable", "virtual", "vb-audio", "voicemeeter", "blackhole", "loopback"].iter().any(|k| n.contains(k))
 }
 
+/// The other end of a virtual cable: VB-CABLE names its playback side "... Input" and its
+/// recording side "... Output". Returns `None` for devices that are not cables.
+pub fn cable_partner(name: &str) -> Option<String> {
+    if !is_virtual_name(name) {
+        return None;
+    }
+    let lower = name.to_ascii_lowercase();
+    for (word, partner) in [("input", "Output"), ("output", "Input")] {
+        if let Some(i) = lower.find(word) {
+            return Some(format!("{}{partner}{}", &name[..i], &name[i + word.len()..]));
+        }
+    }
+    None
+}
+
 pub fn list_devices() -> DeviceList {
     let host = cpal::default_host();
     fn names(devices: impl Iterator<Item = cpal::Device>) -> Vec<String> {
@@ -52,6 +67,13 @@ mod tests {
     }
 
     #[test]
+    fn cable_partner_swaps_input_and_output_sides() {
+        assert_eq!(cable_partner("CABLE Input (VB-Audio Virtual Cable)").as_deref(), Some("CABLE Output (VB-Audio Virtual Cable)"));
+        assert_eq!(cable_partner("CABLE-A Output (VB-Audio Cable A)").as_deref(), Some("CABLE-A Input (VB-Audio Cable A)"));
+        assert_eq!(cable_partner("Realtek Speakers"), None);
+    }
+
+    #[test]
     fn virtual_inputs_keeps_only_cable_like_names_in_original_order() {
         let devices = DeviceList {
             inputs: vec![
@@ -72,5 +94,21 @@ mod tests {
     fn virtual_inputs_is_empty_when_no_devices_match() {
         let devices = DeviceList { inputs: vec!["Realtek High Definition Audio".to_string()], outputs: vec![] };
         assert!(devices.virtual_inputs().is_empty());
+    }
+
+    #[test]
+    fn cable_partner_handles_names_containing_both_words() {
+        // "Input" is matched first, so the first occurrence wins even though "Output" also appears.
+        assert_eq!(cable_partner("Input to Output Cable (VB-Audio Virtual Cable)").as_deref(), Some("Output to Output Cable (VB-Audio Virtual Cable)"));
+    }
+
+    #[test]
+    fn cable_partner_is_none_for_virtual_names_containing_neither_word() {
+        assert_eq!(cable_partner("Voicemeeter Out B1"), None);
+    }
+
+    #[test]
+    fn cable_partner_matches_the_words_case_insensitively() {
+        assert_eq!(cable_partner("voicemeeter input device").as_deref(), Some("voicemeeter Output device"));
     }
 }

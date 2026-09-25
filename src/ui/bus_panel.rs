@@ -1,6 +1,6 @@
-//! One output bus: mute, limiter and tone knobs on the left; ruler fader and meter on the right.
+//! One output bus: tone knobs, limiter and mute on the left; ruler fader and meter on the right.
 
-use super::widgets::{self, COLOR_ACTIVE, COLOR_MUTE, LED_TRIPLE};
+use super::widgets::{self, Geometry, COLOR_ACTIVE, COLOR_MUTE};
 use crate::engine::{BusSettings, Meters};
 use egui::Ui;
 
@@ -10,13 +10,15 @@ pub struct BusView<'a> {
     pub index: usize,
     pub settings: &'a mut BusSettings,
     pub meters: &'a Meters,
+    pub geo: Geometry,
+    pub fader_height: f32,
 }
 
 impl BusView<'_> {
     pub fn show(&mut self, ui: &mut Ui) {
         ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
-                ui.set_width(widgets::STRIP_LEFT_WIDTH);
+                ui.set_width(self.geo.left);
                 widgets::section(ui, "Tone");
                 ui.horizontal(|ui| {
                     widgets::knob(ui, &mut self.settings.bass_db, TONE_RANGE, 0.0, "BASS", "Low shelf at 100 Hz, in dB.");
@@ -24,16 +26,16 @@ impl BusView<'_> {
                 });
                 ui.add_space(widgets::SECTION_GAP);
                 ui.horizontal(|ui| {
-                    widgets::led(ui, &mut self.settings.limiter, "LIMIT", COLOR_ACTIVE, LED_TRIPLE, "Stop peaks from clipping. Leave on unless you know why.");
-                    widgets::led(ui, &mut self.settings.mute, "MUTE", COLOR_MUTE, LED_TRIPLE, "Silence this output.");
+                    widgets::led(ui, &mut self.settings.limiter, "LIMIT", COLOR_ACTIVE, self.geo.led_pair, "Stop peaks from clipping. Leave on unless you know why.");
+                    widgets::led(ui, &mut self.settings.mute, "MUTE", COLOR_MUTE, self.geo.led_pair, "Silence this output.");
                 });
             });
             ui.scope(|ui| {
                 if self.settings.mute {
                     ui.set_opacity(0.45);
                 }
-                widgets::fader(ui, &mut self.settings.gain_db);
-                widgets::meter(ui, self.meters.buses[self.index].load());
+                widgets::fader(ui, &mut self.settings.gain_db, self.fader_height);
+                widgets::meter(ui, self.meters.buses[self.index].load(), self.fader_height);
             });
         });
     }

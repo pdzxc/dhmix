@@ -45,9 +45,13 @@ The default routing sends every strip to A1 (headphones) and sends HW 1 (your mi
 
 ## Per-app audio (game, Discord, music in separate strips)
 
-Like Voicemeeter, StreamMix mixes devices; Windows decides which device each app plays to. Open
-Settings → System → Sound → Volume mixer (Windows 11) or "App volume and device preferences"
-(Windows 10) and set each app's output:
+Like Voicemeeter, StreamMix mixes devices; Windows decides which device each app plays to.
+The **Applications** button in the top bar opens a window that lists every app currently playing
+or recording audio, the device it is on, where that lands in the mixer (for example "VIRT 1 in
+the mixer" or "A1 directly, bypassing the mixer"), and a picker to move it. Moving an app uses
+the same per-app default that Windows' own Sound settings write, so it sticks across restarts.
+The same thing by hand: Settings → System → Sound → Volume mixer (Windows 11) or "App volume and
+device preferences" (Windows 10) and set each app's output:
 
 | App | Windows output | StreamMix strip |
 | --- | --- | --- |

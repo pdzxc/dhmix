@@ -5,11 +5,13 @@
 //! - `engine` – the mixer graph: strips → routing matrix → buses, plus the shared settings/meters.
 //! - `audio`  – device enumeration and cpal streams (WASAPI on Windows), ring buffers, resampling.
 //! - `ui`     – the egui mixer window.
+//! - `apps`   – running applications with audio sessions and per-app device routing (Windows).
 
 // DSP loops iterate interleaved stereo frames with `chunks_exact(2)`; that reads better than
 // `as_chunks::<2>()` and compiles to the same code.
 #![allow(clippy::chunks_exact_to_as_chunks)]
 
+pub mod apps;
 pub mod audio;
 pub mod dsp;
 pub mod engine;

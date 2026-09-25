@@ -1,9 +1,10 @@
 //! Top-level eframe app: owns the audio I/O, the engine thread and the panels.
 
+use super::apps_panel::AppsPanel;
 use super::bus_panel::BusView;
 use super::player_panel::PlayerPanel;
 use super::strip_panel::StripView;
-use super::widgets::{self, COLOR_ACTIVE, COLOR_ASSIGNED, COLOR_MUTE, COLOR_VIRTUAL, PLAYER_WIDTH, STRIP_INNER, STRIP_WIDTH};
+use super::widgets::{self, ColumnFrame, Geometry, COLOR_ACTIVE, COLOR_ASSIGNED, COLOR_MUTE, COLOR_VIRTUAL};
 use crate::audio::{list_devices, AudioIo, DeviceList};
 use crate::engine::player::Player;
 use crate::engine::runner::{self, EngineHandle, EngineInputs, RecordTap};
@@ -55,6 +56,15 @@ pub struct App {
     hotkey_strip: usize,
     hotkey_error: Option<String>,
     status: String,
+    apps: AppsPanel,
+    fine_tune_open: [bool; NUM_STRIPS],
+    /// Per-column fader heights, nudged every frame so each panel fills its row.
+    strip_fader_height: [f32; NUM_STRIPS],
+    bus_fader_height: [f32; NUM_BUSES],
+    /// How far the columns overshot the window's right edge last frame; subtracted next frame.
+    layout_slack: f32,
+    /// Tallest input panel last frame; every input stretches to it so the row is level.
+    input_row_height: f32,
     _engine: EngineHandle,
 }
 
@@ -108,6 +118,12 @@ impl App {
             hotkey_strip: preset.hotkey_strip.min(NUM_STRIPS - 1),
             hotkey_error,
             status: String::new(),
+            apps: AppsPanel::default(),
+            fine_tune_open: [false; NUM_STRIPS],
+            strip_fader_height: [widgets::FADER_MIN_HEIGHT; NUM_STRIPS],
+            bus_fader_height: [widgets::FADER_MIN_HEIGHT; NUM_BUSES],
+            layout_slack: 0.0,
+            input_row_height: 0.0,
             _engine: engine,
         }
     }
@@ -212,6 +228,10 @@ impl App {
             if ui.button("Refresh devices").on_hover_text("Rescan after plugging in a device or installing a cable").clicked() {
                 self.refresh_devices();
             }
+            let apps_label = if self.apps.open { "Applications ▾" } else { "Applications" };
+            if ui.button(apps_label).on_hover_text("See which apps play or record audio and move them between devices").clicked() {
+                self.apps.open = !self.apps.open;
+            }
             ui.separator();
             self.record_controls(ui);
             ui.separator();
@@ -277,13 +297,16 @@ impl App {
         ui.add_space(widgets::SECTION_GAP);
     }
 
-    fn strips_row(&mut self, ui: &mut Ui) {
-        // Wrapped so the PLAYER strip drops to a second row on a narrow window instead of clipping.
-        ui.horizontal_wrapped(|ui| {
+    /// Draws the input row and returns its actual height (the tallest panel).
+    fn strips_row(&mut self, ui: &mut Ui, row_height: f32) -> f32 {
+        let width = widgets::column_width(ui.available_width() - self.layout_slack, NUM_STRIPS);
+        let geo = Geometry::for_column(width);
+        let mut tallest: f32 = 0.0;
+        ui.horizontal_top(|ui| {
             for i in 0..NUM_STRIPS {
                 let is_player = i == PLAYER_STRIP;
-                let width = if is_player { PLAYER_WIDTH } else { STRIP_WIDTH };
-                widgets::panel(ui, width, |ui| {
+                let fader_height = self.strip_fader_height[i];
+                let rect = widgets::panel(ui, width, |ui| {
                     let mut settings = self.settings.lock();
                     let any_solo = settings.any_solo();
                     let connected = self.meters.input_connected[i].load(Ordering::Relaxed);
@@ -296,28 +319,44 @@ impl App {
                     };
                     widgets::panel_header(ui, &strip_title(i), status);
                     if is_player {
-                        self.player.show(ui);
-                    } else {
-                        let mut selected = self.io.settings.strip_inputs[i].clone();
-                        let (names, empty) = if i < NUM_HW_STRIPS {
-                            (&self.devices.inputs, "Choose a microphone…")
-                        } else {
-                            (&self.virtual_first_inputs, "Choose a cable output…")
-                        };
-                        if widgets::device_combo(ui, ("in", i), &mut selected, names, empty, STRIP_INNER) {
-                            self.io.set_strip_input(i, selected);
-                        }
+                        let frame = ColumnFrame { geo, fader_height, any_solo };
+                        self.player.show(ui, &mut settings.strips[i], &self.meters, &mut self.fine_tune_open[i], frame);
+                        return;
                     }
-                    StripView { index: i, settings: &mut settings.strips[i], meters: &self.meters, any_solo }.show(ui);
+                    let mut selected = self.io.settings.strip_inputs[i].clone();
+                    let (names, empty) = if i < NUM_HW_STRIPS {
+                        (&self.devices.inputs, "Choose a microphone…")
+                    } else {
+                        (&self.virtual_first_inputs, "Choose a cable output…")
+                    };
+                    if widgets::device_combo(ui, ("in", i), &mut selected, names, empty, geo.inner) {
+                        self.io.set_strip_input(i, selected);
+                    }
+                    StripView {
+                        index: i,
+                        settings: &mut settings.strips[i],
+                        meters: &self.meters,
+                        any_solo,
+                        fine_tune_open: &mut self.fine_tune_open[i],
+                        geo,
+                        fader_height,
+                    }
+                    .show(ui);
                 });
+                tallest = tallest.max(rect.height());
+                self.strip_fader_height[i] = widgets::stretch_towards(fader_height, rect.height(), row_height);
             }
         });
+        tallest
     }
 
-    fn buses_row(&mut self, ui: &mut Ui) {
-        ui.horizontal_wrapped(|ui| {
+    fn buses_row(&mut self, ui: &mut Ui, row_height: f32) {
+        let width = widgets::column_width(ui.available_width() - self.layout_slack, NUM_BUSES);
+        let geo = Geometry::for_column(width);
+        ui.horizontal_top(|ui| {
             for b in 0..NUM_BUSES {
-                widgets::panel(ui, STRIP_WIDTH, |ui| {
+                let fader_height = self.bus_fader_height[b];
+                let rect = widgets::panel(ui, width, |ui| {
                     let mut settings = self.settings.lock();
                     let hardware = b < NUM_HW_BUSES;
                     let connected = self.meters.output_connected[b].load(Ordering::Relaxed);
@@ -331,11 +370,12 @@ impl App {
                     widgets::panel_header(ui, &bus_title(b), status);
                     let mut selected = self.io.settings.bus_outputs[b].clone();
                     let empty = if hardware { "Choose speakers / headphones…" } else { "Choose a cable input…" };
-                    if widgets::device_combo(ui, ("out", b), &mut selected, &self.devices.outputs, empty, STRIP_INNER) {
+                    if widgets::device_combo(ui, ("out", b), &mut selected, &self.devices.outputs, empty, geo.inner) {
                         self.io.set_bus_output(b, selected);
                     }
-                    BusView { index: b, settings: &mut settings.buses[b], meters: &self.meters }.show(ui);
+                    BusView { index: b, settings: &mut settings.buses[b], meters: &self.meters, geo, fader_height }.show(ui);
                 });
+                self.bus_fader_height[b] = widgets::stretch_towards(fader_height, rect.height(), row_height);
             }
         });
     }
@@ -352,20 +392,31 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_hotkeys();
         egui::TopBottomPanel::top("top").show(ctx, |ui| self.top_bar(ui));
-        egui::TopBottomPanel::bottom("buses").resizable(false).show(ctx, |ui| {
-            widgets::section(ui, "Outputs");
-            self.buses_row(ui);
-            ui.add_space(widgets::SECTION_GAP);
-        });
         egui::CentralPanel::default().frame(egui::Frame::default().fill(widgets::COLOR_BG).inner_margin(egui::Margin::same(widgets::SECTION_GAP))).show(ctx, |ui| {
-            egui::ScrollArea::both().show(ui, |ui| {
-                if self.nothing_configured() {
-                    Self::setup_banner(ui);
-                }
-                widgets::section(ui, "Inputs");
-                self.strips_row(ui);
-            });
+            if self.nothing_configured() {
+                Self::setup_banner(ui);
+            }
+            // Two captions, two rows: the rows share whatever height is left, corrected by how much
+            // the previous frame overshot, so nothing is ever cut off at the bottom.
+            let captions = 2.0 * (widgets::SECTION_GAP + widgets::SECTION_CAPTION_HEIGHT) + widgets::SECTION_GAP;
+            // Targets are whatever the window really offers; faders stop at FADER_MIN_HEIGHT on
+            // their own, so a too-short window looks tight rather than overflowing.
+            let rows_height = ui.available_height() - captions;
+            // Inputs get their share, or more if one input panel (the player) needs it.
+            let input_height = (rows_height * widgets::INPUT_ROW_SHARE).floor().max(self.input_row_height);
+            let right = ui.max_rect().right();
+            widgets::section(ui, "Inputs");
+            self.input_row_height = self.strips_row(ui, input_height);
+            widgets::section(ui, "Outputs");
+            // Outputs get exactly what is really left below the inputs.
+            let output_height = ui.available_height() - widgets::SECTION_GAP;
+            self.buses_row(ui, output_height);
+            let overshoot = ui.min_rect().right() - right;
+            if overshoot.abs() > 0.5 {
+                self.layout_slack = (self.layout_slack + overshoot).max(0.0);
+            }
         });
+        self.apps.show(ctx, &self.io.settings);
         ctx.request_repaint_after(Duration::from_millis(33));
     }
 

@@ -1,7 +1,10 @@
 //! Soundboard pads and the music player, shown at the top of the PLAYER strip.
 
-use super::widgets::{self, COLOR_ACTIVE, COLOR_ASSIGNED, LED_PAIR, PAD_SIZE, PAD_SPACING};
+use super::strip_panel::{fine_tune_window, fx_row, pan_slider_width, routing_rows, state_row};
+use super::widgets::{self, ColumnFrame, Geometry, COLOR_ACTIVE, COLOR_ASSIGNED, PAD_SPACING};
 use crate::engine::player::{load_clip, Clip, PlayerCommand, PlayerStatus};
+use crate::engine::{Meters, StripSettings};
+use crate::PLAYER_STRIP;
 use crate::preset::NUM_PADS;
 use crate::SAMPLE_RATE;
 use crossbeam_channel::Sender;
@@ -90,20 +93,51 @@ impl PlayerPanel {
         }
     }
 
-    pub fn show(&mut self, ui: &mut Ui) {
-        self.music_controls(ui);
-        self.pad_grid(ui);
+    /// The whole PLAYER strip: music on top, pads beside the fader, then sends and state.
+    pub fn show(&mut self, ui: &mut Ui, settings: &mut StripSettings, meters: &Meters, fine_tune_open: &mut bool, frame: ColumnFrame) {
+        let ColumnFrame { geo, fader_height, any_solo } = frame;
+        self.music_controls(ui, geo);
+        widgets::section(ui, "Soundboard");
+        let silenced = settings.mute || (any_solo && !settings.solo);
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(geo.left);
+                self.pad_grid(ui, geo);
+                ui.add_space(widgets::SECTION_GAP);
+                widgets::section(ui, "Send to");
+                routing_rows(ui, &mut settings.routing, PLAYER_STRIP, geo);
+                ui.add_space(widgets::SECTION_GAP);
+                state_row(ui, settings, geo);
+                fx_row(ui, settings, geo);
+            });
+            ui.scope(|ui| {
+                if silenced {
+                    ui.set_opacity(0.45);
+                }
+                widgets::fader(ui, &mut settings.gain_db, fader_height);
+                widgets::meter(ui, meters.strips[PLAYER_STRIP].load(), fader_height);
+            });
+        });
+        ui.horizontal(|ui| {
+            ui.spacing_mut().slider_width = pan_slider_width(geo.inner);
+            ui.add(egui::Slider::new(&mut settings.pan, -1.0..=1.0).show_value(false).text("pan"))
+                .on_hover_text("Left / right balance. Double-click to centre.");
+            if ui.small_button("Fine-tune…").on_hover_text("All effect parameters in a separate window").clicked() {
+                *fine_tune_open = !*fine_tune_open;
+            }
+        });
         if let Some(err) = &self.last_error {
             widgets::error_label(ui, err);
         }
+        fine_tune_window(ui.ctx(), PLAYER_STRIP, settings, meters, fine_tune_open);
     }
 
-    fn music_controls(&mut self, ui: &mut Ui) {
+    fn music_controls(&mut self, ui: &mut Ui, geo: Geometry) {
         widgets::section(ui, "Music");
         let playing = self.status.music_playing.load(Ordering::Relaxed);
         let loaded = self.music.is_some();
         ui.horizontal(|ui| {
-            if ui.button("Load track…").on_hover_text("MP3, WAV, FLAC, OGG or M4A").clicked() {
+            if ui.button("Load…").on_hover_text("MP3, WAV, FLAC, OGG or M4A").clicked() {
                 if let Some(path) = pick_audio_file() {
                     self.load_music(&path, true);
                 }
@@ -115,20 +149,22 @@ impl PlayerPanel {
             if ui.add_enabled(loaded, egui::Button::new("Stop")).clicked() {
                 let _ = self.tx.send(PlayerCommand::MusicStop);
             }
-            if widgets::led(ui, &mut self.music_loop, "LOOP", COLOR_ACTIVE, LED_PAIR, "Start again when the track ends.") {
+            if widgets::led(ui, &mut self.music_loop, "LOOP", COLOR_ACTIVE, geo.led_triple, "Start again when the track ends.") {
                 let _ = self.tx.send(PlayerCommand::MusicLoop(self.music_loop));
             }
         });
-        match &self.music {
-            Some((_, clip)) => widgets::value_label(ui, &widgets::shorten(&clip.name, 36)),
-            None => widgets::hint(ui, "No track loaded. Load one, then send PLAYER to B1 so viewers hear it."),
-        }
-
         let pos = self.status.music_position.load(Ordering::Relaxed) as f32;
         let len = self.status.music_length.load(Ordering::Relaxed).max(1) as f32;
+        ui.horizontal(|ui| {
+            match &self.music {
+                Some((_, clip)) => widgets::value_label(ui, &widgets::shorten(&clip.name, 22)),
+                None => widgets::hint(ui, "No track loaded"),
+            }
+            widgets::hint(ui, clock(pos, len));
+        });
         let mut t = self.seek_target.unwrap_or(pos / len);
-        ui.spacing_mut().slider_width = widgets::PLAYER_SLIDER_WIDTH;
-        let slider = ui.add_enabled(loaded, egui::Slider::new(&mut t, 0.0..=1.0).show_value(false).text(clock(pos, len)));
+        ui.spacing_mut().slider_width = pan_slider_width(geo.inner);
+        let slider = ui.add_enabled(loaded, egui::Slider::new(&mut t, 0.0..=1.0).show_value(false).text("seek"));
         if slider.dragged() || slider.changed() {
             self.seek_target = Some(t);
         }
@@ -137,16 +173,15 @@ impl PlayerPanel {
                 let _ = self.tx.send(PlayerCommand::MusicSeek(target));
             }
         }
-        if ui.add(egui::Slider::new(&mut self.music_gain, 0.0..=1.5).text("music volume")).changed() {
+        if ui.add(egui::Slider::new(&mut self.music_gain, 0.0..=1.5).show_value(false).text("music vol")).changed() {
             let _ = self.tx.send(PlayerCommand::MusicGain(self.music_gain));
         }
     }
 
-    fn pad_grid(&mut self, ui: &mut Ui) {
-        widgets::section(ui, "Soundboard");
+    fn pad_grid(&mut self, ui: &mut Ui, geo: Geometry) {
         ui.horizontal(|ui| {
-            ui.spacing_mut().slider_width = widgets::PAD_SLIDER_WIDTH;
-            ui.add(egui::Slider::new(&mut self.pad_gain, 0.0..=1.5).text("pad volume"));
+            ui.spacing_mut().slider_width = pan_slider_width(geo.left);
+            ui.add(egui::Slider::new(&mut self.pad_gain, 0.0..=1.5).show_value(false).text("pad vol"));
             if self.status.pads_sounding.load(Ordering::Relaxed) > 0 && ui.small_button("Stop all").clicked() {
                 let _ = self.tx.send(PlayerCommand::StopPads);
             }
@@ -158,13 +193,13 @@ impl PlayerPanel {
             for (i, tip) in PAD_TIPS.iter().enumerate() {
                 let filled = self.pads[i].is_some();
                 let name = match &self.pads[i] {
-                    Some(p) => widgets::shorten(&p.clip.name, 11),
-                    None => "Add sound".to_string(),
+                    Some(p) => widgets::shorten(&p.clip.name, 8),
+                    None => "add".to_string(),
                 };
                 let fill = if filled { COLOR_ASSIGNED } else { widgets::COLOR_INSET };
                 let text_color = if filled { widgets::on_color(fill) } else { widgets::COLOR_TEXT_MUTED };
                 let text = egui::RichText::new(format!("{}  {name}", i + 1)).size(10.0).strong().color(text_color);
-                let response = widgets::tile_button(ui, text, fill, PAD_SIZE).on_hover_text(if filled { *tip } else { EMPTY_PAD_TIP });
+                let response = widgets::tile_button(ui, text, fill, geo.pad).on_hover_text(if filled { *tip } else { EMPTY_PAD_TIP });
                 if response.clicked() {
                     if filled {
                         to_play = Some(i);

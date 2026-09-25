@@ -83,6 +83,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn help_window_renders_without_panicking() {
+        let ctx = egui::Context::default();
+        let mut panel = HelpPanel { open: true };
+        for _ in 0..3 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| panel.show(ctx));
+        }
+    }
+
+    #[test]
     fn guide_covers_inputs_outputs_and_the_routing_rule() {
         let text: String = SECTIONS.iter().flat_map(|(h, ps)| std::iter::once(*h).chain(ps.iter().copied())).collect();
         for needed in ["Hardware input", "Virtual input", "Player", "A1 to A3", "B1 and B2", "A means to my ears"] {

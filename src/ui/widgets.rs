@@ -329,7 +329,8 @@ pub fn panel_header(ui: &mut Ui, title: &str, status: Option<(&str, Color32)>) {
     });
 }
 
-/// Small uppercase caption naming the group of controls beneath it.
+/// Small uppercase caption naming the group of controls beneath it. Not for use inside an
+/// `egui::Grid`: it adds vertical space first, which a grid forbids. Use `caption` there.
 pub fn section(ui: &mut Ui, label: &str) {
     ui.add_space(SECTION_GAP);
     caption(ui, label);

@@ -74,10 +74,11 @@ impl AppsPanel {
             }
             let mut change: Option<(u32, Flow, Option<String>)> = None;
             egui::Grid::new("apps-grid").num_columns(4).spacing(widgets::TABLE_SPACING).striped(true).show(ui, |ui| {
-                widgets::section(ui, "App");
-                widgets::section(ui, "Does");
-                widgets::section(ui, "Device now");
-                widgets::section(ui, "Send to");
+                // Inline captions: a grid row may not add vertical space (egui panics if it does).
+                widgets::caption(ui, "App");
+                widgets::caption(ui, "Does");
+                widgets::caption(ui, "Device now");
+                widgets::caption(ui, "Send to");
                 ui.end_row();
                 for session in &self.sessions {
                     widgets::value_label(ui, &session.name);
@@ -166,5 +167,21 @@ mod tests {
         // so the bus-output match must still be reported.
         let pos = mixer_position("CABLE-A Input (VB-Audio Cable A)", Flow::Playback, &io());
         assert_eq!(pos.as_deref(), Some("B1 directly, bypassing the mixer"));
+    }
+}
+
+#[cfg(test)]
+mod render_tests {
+    use super::*;
+
+    /// The window must render on every platform, including where no sessions exist.
+    #[test]
+    fn applications_window_renders_without_panicking() {
+        let ctx = egui::Context::default();
+        let mut panel = AppsPanel { open: true, ..Default::default() };
+        let io = IoSettings::empty();
+        for _ in 0..3 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| panel.show(ctx, &io));
+        }
     }
 }

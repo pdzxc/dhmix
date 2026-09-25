@@ -23,7 +23,7 @@ impl Recording {
         let mut writer = hound::WavWriter::create(path, spec).with_context(|| format!("create {}", path.display()))?;
         let (tx, rx) = bounded::<Vec<f32>>(256);
         let thread = std::thread::Builder::new()
-            .name("streammix-recorder".into())
+            .name("dhmix-recorder".into())
             .spawn(move || {
                 for block in rx {
                     for v in block {
@@ -63,7 +63,7 @@ mod tests {
 
     #[test]
     fn recording_writes_a_readable_wav() {
-        let dir = std::env::temp_dir().join(format!("streammix-rec-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("dhmix-rec-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("test.wav");
         let (rec, tx) = Recording::start(&path).unwrap();

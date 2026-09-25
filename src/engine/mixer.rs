@@ -95,7 +95,7 @@ impl BusDsp {
             settings: BusSettings::default(),
             bass: StereoBiquad::default(),
             treble: StereoBiquad::default(),
-            limiter: Limiter::new(sample_rate, -0.5),
+            limiter: Limiter::new(sample_rate, BusSettings::default().limit_db),
             meter: MeterBallistics::default(),
         }
     }
@@ -107,7 +107,9 @@ impl BusDsp {
         if s.treble_db != self.settings.treble_db {
             self.treble.set_coeffs(Coeffs::high_shelf(sample_rate, TREBLE_HZ, s.treble_db, 0.9));
         }
-        self.limiter.enabled = s.limiter;
+        if s.limit_db != self.settings.limit_db {
+            self.limiter.set_ceiling_db(s.limit_db);
+        }
         self.settings = *s;
     }
 

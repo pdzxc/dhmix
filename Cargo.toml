@@ -1,16 +1,16 @@
 [package]
-name = "streammix"
+name = "dhmix"
 version = "0.1.0"
 edition = "2021"
 description = "Free, open virtual audio mixer for streaming (Voicemeeter-style): 6 input strips, 3 hardware + 2 virtual buses, per-strip denoiser/gate/EQ/compressor/echo/reverb."
 license = "MIT"
 
 [[bin]]
-name = "streammix"
+name = "dhmix"
 path = "src/main.rs"
 
 [lib]
-name = "streammix"
+name = "dhmix"
 path = "src/lib.rs"
 
 [dependencies]
@@ -30,6 +30,8 @@ global-hotkey = "0.6"
 rfd = "0.15"
 log = "0.4"
 env_logger = "0.11"
+tray-icon = "0.25"
+auto-launch = "0.6"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.54", features = [

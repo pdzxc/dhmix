@@ -8,18 +8,19 @@ pub struct Limiter {
     ceiling: f32,
     release: f32,
     gain: f32,
-    pub enabled: bool,
 }
 
 impl Limiter {
     pub fn new(sample_rate: f32, ceiling_db: f32) -> Self {
-        Self { ceiling: db_to_gain(ceiling_db), release: time_coeff(60.0, sample_rate), gain: 1.0, enabled: true }
+        Self { ceiling: db_to_gain(ceiling_db), release: time_coeff(60.0, sample_rate), gain: 1.0 }
+    }
+
+    /// Moves the ceiling; the running gain recovers on its own through the release.
+    pub fn set_ceiling_db(&mut self, ceiling_db: f32) {
+        self.ceiling = db_to_gain(ceiling_db);
     }
 
     pub fn process(&mut self, buf: &mut [f32]) {
-        if !self.enabled {
-            return;
-        }
         for frame in buf.chunks_exact_mut(2) {
             let peak = frame[0].abs().max(frame[1].abs());
             let needed = if peak * self.gain > self.ceiling { self.ceiling / peak } else { 1.0 };
@@ -43,5 +44,16 @@ mod tests {
         l.process(&mut buf);
         let ceiling = db_to_gain(-1.0);
         assert!(buf.iter().all(|v| v.abs() <= ceiling + 1e-6));
+    }
+
+    #[test]
+    fn lowering_the_ceiling_holds_the_output_under_the_new_ceiling() {
+        let mut l = Limiter::new(SAMPLE_RATE as f32, -1.0);
+        l.set_ceiling_db(-20.0);
+        let mut buf = vec![0.5; 9600];
+        l.process(&mut buf);
+        let ceiling = db_to_gain(-20.0);
+        assert!(buf.iter().all(|v| v.abs() <= ceiling + 1e-6));
+        assert!(buf[buf.len() - 1].abs() > ceiling * 0.9, "the signal is held near the ceiling, not silenced");
     }
 }

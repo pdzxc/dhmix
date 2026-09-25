@@ -3,49 +3,55 @@
 use super::widgets::{self, COLOR_ACTIVE, COLOR_VIRTUAL};
 
 const HELP_WIDTH: f32 = 560.0;
+/// Shown at the foot of the guide.
+const LICENCE_NOTE: &str = "DHMIX is free and open source software under the MIT licence.";
 
 /// (heading, paragraphs) for each section of the guide.
 const SECTIONS: &[(&str, &[&str])] = &[
+    ("The idea", &["A mixer controls where every sound goes."]),
     (
-        "The idea",
-        &["Think of the mixer as a room with doors. Sound comes in through the inputs, you shape it, and the buttons on each input decide which doors it leaves through."],
-    ),
-    (
-        "Inputs: where sound comes in",
+        "Sound comes in through inputs",
         &[
-            "Hardware input 1, 2, 3 are real things plugged into your PC: your microphone, a second mic, a guitar or a console line. Pick the device under the name.",
-            "Virtual input 1 and 2 are programs on your PC: the game, Discord, Spotify. They cannot plug in with a wire, so they play into a virtual cable, and the cable's other end shows up here.",
-            "Player is music and sound clips you load into DHMIX itself.",
+            "•  Hardware inputs: real devices like your mic, guitar, or console.",
+            "•  Virtual inputs: desktop apps like games, Discord, Spotify, or a browser.",
+            "•  Player: music and sound clips loaded into DHMIX.",
         ],
     ),
     (
-        "Outputs: where the mix goes out",
+        "Sound leaves through outputs",
+        &["•  A1–A3: your headphones or speakers.", "•  B1–B2: other apps, such as OBS, Discord, or a call."],
+    ),
+    (
+        "The buttons choose where each sound goes",
+        &["•  A = you hear it.", "•  B = your stream, recording, or call hears it."],
+    ),
+    (
+        "Sending a desktop app to your stream",
         &[
-            "A1 to A3 (hardware out) go to things you hear with your ears: headphones, speakers, a second pair of headphones for a guest. A1 is usually your headphones.",
-            "B1 and B2 (virtual out) go to programs, not ears. B1 is what OBS or Discord hears as your microphone. Nothing physical is connected; it is a cable into another program.",
+            "For example, if you want Spotify, a game, or any desktop app to reach your stream:",
+            "1.  Set that app's audio output to a DHMIX Virtual Input.",
+            "2.  Find that Virtual Input strip in DHMIX.",
+            "3.  Turn on B1.",
+            "4.  In OBS, Discord, or your call app, select the DHMIX B1 virtual output as the microphone / input.",
         ],
     ),
     (
-        "The A / B buttons are the doors",
+        "Simple streaming setup",
         &[
-            "A1 on for the mic means \"I hear my own mic in my headphones\". B1 on for the mic means \"the stream hears my mic\". Several doors can be open at once, or none.",
-            "Rule of thumb: A means to my ears, B means to the stream or call.",
+            "•  Mic: A1 + B1 — you hear yourself; stream hears you.",
+            "•  Game: A1 only — you hear it; OBS can capture it separately.",
+            "•  Discord friends: A1; enable B1 if viewers should hear them.",
+            "•  Music / desktop app: A1 + B1 — you and viewers hear it.",
         ],
     ),
     (
-        "A typical streaming setup",
+        "Other controls",
         &[
-            "Mic: A1 and B1. You hear yourself, viewers hear you.",
-            "Game: A1 only. You hear it; OBS captures game sound by itself.",
-            "Discord friends: A1 so you hear them. Add B1 only if viewers should hear them too.",
-            "Music: A1 and B1 so everyone hears it. Turn B1 off during a call where music should stay private.",
-        ],
-    ),
-    (
-        "Everything else on a strip",
-        &[
-            "The fader is how loud. The knobs and the colour pad are how it sounds. MUTE silences it everywhere, SOLO lets you hear only that one, MONO puts a single mic in the centre.",
-            "Applications, in the top bar, shows which programs play or record audio and lets you move each one to a different device.",
+            "•  Fader: volume.",
+            "•  Mute: turns that sound off everywhere.",
+            "•  Solo: lets you hear only that sound.",
+            "•  Mono: centres a single mic.",
+            "•  Applications: shows audio apps and lets you move each one to another input / device.",
         ],
     ),
 ];
@@ -70,9 +76,11 @@ impl HelpPanel {
             }
             ui.add_space(widgets::SECTION_GAP);
             ui.horizontal(|ui| {
-                ui.label(egui::RichText::new("A = to my ears").strong().color(COLOR_ACTIVE));
-                ui.label(egui::RichText::new("B = to the stream or call").strong().color(COLOR_VIRTUAL));
+                ui.label(egui::RichText::new("A = you hear it").strong().color(COLOR_ACTIVE));
+                ui.label(egui::RichText::new("B = your stream, recording, or call hears it").strong().color(COLOR_VIRTUAL));
             });
+            ui.add_space(widgets::SECTION_GAP);
+            widgets::hint(ui, LICENCE_NOTE);
         });
         self.open = open;
     }
@@ -94,7 +102,17 @@ mod tests {
     #[test]
     fn guide_covers_inputs_outputs_and_the_routing_rule() {
         let text: String = SECTIONS.iter().flat_map(|(h, ps)| std::iter::once(*h).chain(ps.iter().copied())).collect();
-        for needed in ["Hardware input", "Virtual input", "Player", "A1 to A3", "B1 and B2", "A means to my ears"] {
+        for needed in ["Hardware inputs", "Virtual inputs", "Player", "A1–A3", "B1–B2", "A = you hear it", "Turn on B1"] {
+            assert!(text.contains(needed), "guide should mention {needed}");
+        }
+    }
+
+    /// "Other controls" is the one section documenting the per-strip buttons; a reader hunting
+    /// for what MUTE, SOLO or MONO does, or where Applications lives, must find it there.
+    #[test]
+    fn guide_documents_mute_solo_mono_and_applications() {
+        let text: String = SECTIONS.iter().flat_map(|(h, ps)| std::iter::once(*h).chain(ps.iter().copied())).collect();
+        for needed in ["Mute", "Solo", "Mono", "Applications"] {
             assert!(text.contains(needed), "guide should mention {needed}");
         }
     }
@@ -115,6 +133,13 @@ mod tests {
                 assert!(!paragraph.trim().is_empty(), "section '{heading}' has a blank paragraph");
             }
         }
+    }
+
+    /// The licence note at the foot of the guide must actually name the licence, or a reader
+    /// has no way to know DHMIX is MIT-licensed without leaving the app.
+    #[test]
+    fn licence_note_mentions_mit() {
+        assert!(LICENCE_NOTE.contains("MIT"), "licence note should mention MIT: {LICENCE_NOTE}");
     }
 
     #[test]

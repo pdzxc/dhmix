@@ -68,7 +68,7 @@ pub fn supported() -> bool {
 
 /// Processes that should not be offered for routing.
 pub fn is_system_process(name: &str) -> bool {
-    matches!(name.to_ascii_lowercase().as_str(), "system sounds" | "audiodg" | "explorer" | "streammix" | "shellexperiencehost")
+    matches!(name.to_ascii_lowercase().as_str(), "system sounds" | "audiodg" | "explorer" | "dhmix" | "shellexperiencehost")
 }
 
 #[cfg(test)]
@@ -78,7 +78,7 @@ mod tests {
     #[test]
     fn system_processes_are_filtered_out() {
         assert!(is_system_process("AudioDg"));
-        assert!(is_system_process("streammix"));
+        assert!(is_system_process("dhmix"));
         assert!(!is_system_process("Discord"));
     }
 
@@ -87,7 +87,7 @@ mod tests {
         assert!(is_system_process("SYSTEM SOUNDS"));
         assert!(is_system_process("AUDIODG"));
         assert!(is_system_process("Explorer"));
-        assert!(is_system_process("StreamMix"));
+        assert!(is_system_process("DhMix"));
         assert!(is_system_process("ShellExperienceHost"));
         assert!(!is_system_process("DISCORD"));
     }

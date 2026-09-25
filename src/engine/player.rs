@@ -8,8 +8,9 @@ use crossbeam_channel::{Receiver, Sender};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::Arc;
+use crate::dsp::meter::{block_peak, AtomicPeak, MeterBallistics};
 use symphonia::core::audio::SampleBuffer;
-use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL};
+use symphonia::core::codecs::{DecoderOptions, CODEC_TYPE_NULL, CODEC_TYPE_OPUS};
 use symphonia::core::errors::Error as SymphoniaError;
 use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
@@ -50,6 +51,9 @@ impl Clip {
 }
 
 /// Decodes MP3, WAV, FLAC, OGG, AAC/M4A with symphonia.
+/// Shown when an .ogg (or .opus) file holds Opus rather than Vorbis audio.
+pub const OPUS_UNSUPPORTED: &str = "Opus audio is not supported yet (Discord and WhatsApp clips use it). Convert it to MP3, WAV, FLAC or OGG Vorbis.";
+
 pub fn load_clip(path: &Path) -> Result<Clip> {
     let file = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
@@ -67,6 +71,11 @@ pub fn load_clip(path: &Path) -> Result<Clip> {
         .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
         .ok_or_else(|| anyhow!("no audio track"))?;
     let track_id = track.id;
+    // The Ogg demuxer knows Opus streams (Discord voice clips, WhatsApp notes) but no Opus
+    // decoder ships with the app, so name the problem instead of "unsupported codec".
+    if track.codec_params.codec == CODEC_TYPE_OPUS {
+        return Err(anyhow!(OPUS_UNSUPPORTED));
+    }
     let mut decoder = symphonia::default::get_codecs()
         .make(&track.codec_params, &DecoderOptions::default())
         .context("no decoder for this codec")?;
@@ -109,8 +118,10 @@ pub fn load_clip(path: &Path) -> Result<Clip> {
 
 pub enum PlayerCommand {
     /// Plays a pad; a pad that is already sounding is restarted.
-    PlayPad { pad: usize, samples: Arc<Vec<f32>>, gain: f32 },
+    PlayPad { pad: usize, samples: Arc<Vec<f32>> },
     StopPads,
+    /// Linear gain applied to every sounding pad, live.
+    PadsGain(f32),
     LoadMusic { samples: Arc<Vec<f32>> },
     MusicPlayPause,
     MusicStop,
@@ -127,13 +138,15 @@ pub struct PlayerStatus {
     pub music_length: AtomicU32,
     pub music_playing: AtomicBool,
     pub pads_sounding: AtomicU32,
+    /// Smoothed peaks of the music and of the pads on their own, before the PLAYER strip.
+    pub music_peak: AtomicPeak,
+    pub pads_peak: AtomicPeak,
 }
 
 struct PadVoice {
     pad: usize,
     samples: Arc<Vec<f32>>,
     pos: usize,
-    gain: f32,
 }
 
 struct MusicVoice {
@@ -149,23 +162,40 @@ pub struct Player {
     music: Option<MusicVoice>,
     music_loop: bool,
     music_gain: f32,
+    pads_gain: f32,
+    music_meter: MeterBallistics,
+    pads_meter: MeterBallistics,
+    /// The music block on its own, so it can be metered before it joins the pads.
+    scratch: Vec<f32>,
 }
 
 impl Player {
     pub fn new() -> (Self, Sender<PlayerCommand>, Arc<PlayerStatus>) {
         let (tx, rx) = crossbeam_channel::unbounded();
         let status = Arc::new(PlayerStatus::default());
-        let player = Self { rx, status: status.clone(), pads: Vec::new(), music: None, music_loop: false, music_gain: 1.0 };
+        let player = Self {
+            rx,
+            status: status.clone(),
+            pads: Vec::new(),
+            music: None,
+            music_loop: false,
+            music_gain: 1.0,
+            pads_gain: 1.0,
+            music_meter: MeterBallistics::default(),
+            pads_meter: MeterBallistics::default(),
+            scratch: Vec::new(),
+        };
         (player, tx, status)
     }
 
     fn handle(&mut self, cmd: PlayerCommand) {
         match cmd {
-            PlayerCommand::PlayPad { pad, samples, gain } => {
+            PlayerCommand::PlayPad { pad, samples } => {
                 self.pads.retain(|v| v.pad != pad);
-                self.pads.push(PadVoice { pad, samples, pos: 0, gain });
+                self.pads.push(PadVoice { pad, samples, pos: 0 });
             }
             PlayerCommand::StopPads => self.pads.clear(),
+            PlayerCommand::PadsGain(g) => self.pads_gain = g.max(0.0),
             PlayerCommand::LoadMusic { samples } => {
                 // An empty clip has nothing to play and would spin the loop below when looping.
                 self.music = (!samples.is_empty()).then_some(MusicVoice { samples, pos: 0, playing: true });
@@ -192,7 +222,8 @@ impl Player {
         }
     }
 
-    /// Writes one block of mixed pads + music into `out` (interleaved stereo, overwritten).
+    /// Writes one block of mixed pads + music into `out` (interleaved stereo, overwritten), and
+    /// meters the pads and the music separately.
     pub fn render(&mut self, out: &mut [f32]) {
         while let Ok(cmd) = self.rx.try_recv() {
             self.handle(cmd);
@@ -201,18 +232,22 @@ impl Player {
         for voice in &mut self.pads {
             let end = (voice.pos + out.len()).min(voice.samples.len());
             for (o, s) in out.iter_mut().zip(voice.samples[voice.pos..end].iter()) {
-                *o += s * voice.gain;
+                *o += s * self.pads_gain;
             }
             voice.pos = end;
         }
         self.pads.retain(|v| v.pos < v.samples.len());
+        let pads_peak = self.pads_meter.update(block_peak(out));
+        self.status.pads_peak.store(pads_peak[0], pads_peak[1]);
 
+        self.scratch.clear();
+        self.scratch.resize(out.len(), 0.0);
         if let Some(m) = &mut self.music {
             if m.playing {
                 let mut written = 0;
                 while written < out.len() && !m.samples.is_empty() {
                     let end = (m.pos + out.len() - written).min(m.samples.len());
-                    for (o, s) in out[written..].iter_mut().zip(m.samples[m.pos..end].iter()) {
+                    for (o, s) in self.scratch[written..].iter_mut().zip(m.samples[m.pos..end].iter()) {
                         *o += s * self.music_gain;
                     }
                     written += end - m.pos;
@@ -232,6 +267,11 @@ impl Player {
             self.status.music_length.store((m.samples.len() / 2) as u32, Ordering::Relaxed);
             self.status.music_playing.store(m.playing, Ordering::Relaxed);
         }
+        let music_peak = self.music_meter.update(block_peak(&self.scratch));
+        self.status.music_peak.store(music_peak[0], music_peak[1]);
+        for (o, s) in out.iter_mut().zip(self.scratch.iter()) {
+            *o += s;
+        }
         self.status.pads_sounding.store(self.pads.len() as u32, Ordering::Relaxed);
     }
 }
@@ -247,7 +287,7 @@ mod tests {
     #[test]
     fn pad_plays_once_and_stops() {
         let (mut p, tx, status) = Player::new();
-        tx.send(PlayerCommand::PlayPad { pad: 0, samples: clip(0.5, 6), gain: 1.0 }).unwrap();
+        tx.send(PlayerCommand::PlayPad { pad: 0, samples: clip(0.5, 6) }).unwrap();
         let mut out = vec![0.0; 8];
         p.render(&mut out);
         assert_eq!(out, vec![0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]);
@@ -259,14 +299,19 @@ mod tests {
     #[test]
     fn pads_overlap_and_music_loops() {
         let (mut p, tx, status) = Player::new();
-        tx.send(PlayerCommand::PlayPad { pad: 0, samples: clip(0.1, 100), gain: 1.0 }).unwrap();
-        tx.send(PlayerCommand::PlayPad { pad: 1, samples: clip(0.2, 100), gain: 0.5 }).unwrap();
+        tx.send(PlayerCommand::PlayPad { pad: 0, samples: clip(0.1, 100) }).unwrap();
+        tx.send(PlayerCommand::PlayPad { pad: 1, samples: clip(0.2, 100) }).unwrap();
+        tx.send(PlayerCommand::PadsGain(0.5)).unwrap();
         tx.send(PlayerCommand::LoadMusic { samples: clip(1.0, 3) }).unwrap();
         tx.send(PlayerCommand::MusicLoop(true)).unwrap();
         let mut out = vec![0.0; 8];
         p.render(&mut out);
-        assert!(out.iter().all(|v| (v - 1.2).abs() < 1e-6), "{out:?}");
+        assert!(out.iter().all(|v| (v - 1.15).abs() < 1e-6), "{out:?}");
         assert!(status.music_playing.load(Ordering::Relaxed));
+        let [pads_l, _] = status.pads_peak.load();
+        let [music_l, _] = status.music_peak.load();
+        assert!((pads_l - 0.15).abs() < 1e-6, "the pads meter sees only the pads: {pads_l}");
+        assert!((music_l - 1.0).abs() < 1e-6, "the music meter sees only the music: {music_l}");
     }
 
     #[test]
@@ -311,5 +356,88 @@ mod tests {
         p.render(&mut out);
         assert!(out.iter().all(|v| *v == 0.0));
         assert!(!status.music_playing.load(Ordering::Relaxed));
+    }
+
+    /// The CRC-32 variant OGG pages are checksummed with: MSB-first, polynomial 0x04c11db7,
+    /// initial value zero, no final XOR. `symphonia-format-ogg` rejects a page whose header CRC
+    /// does not match this exactly.
+    fn ogg_crc32(data: &[u8]) -> u32 {
+        let mut crc: u32 = 0;
+        for &byte in data {
+            crc ^= (byte as u32) << 24;
+            for _ in 0..8 {
+                crc = if crc & 0x8000_0000 != 0 { (crc << 1) ^ 0x04c1_1db7 } else { crc << 1 };
+            }
+        }
+        crc
+    }
+
+    /// Builds one OGG page (header, segment table, packet bodies and its CRC) holding `packets`.
+    fn ogg_page(serial: u32, sequence: u32, flags: u8, absgp: u64, packets: &[&[u8]]) -> Vec<u8> {
+        let mut segments = Vec::new();
+        let mut body = Vec::new();
+        for packet in packets {
+            let mut remaining = packet.len();
+            while remaining >= 255 {
+                segments.push(255u8);
+                remaining -= 255;
+            }
+            segments.push(remaining as u8);
+            body.extend_from_slice(packet);
+        }
+        let mut page = Vec::new();
+        page.extend_from_slice(b"OggS");
+        page.push(0); // version
+        page.push(flags);
+        page.extend_from_slice(&absgp.to_le_bytes());
+        page.extend_from_slice(&serial.to_le_bytes());
+        page.extend_from_slice(&sequence.to_le_bytes());
+        page.extend_from_slice(&[0u8; 4]); // CRC placeholder, filled in below
+        page.push(segments.len() as u8);
+        page.extend_from_slice(&segments);
+        page.extend_from_slice(&body);
+        let crc = ogg_crc32(&page);
+        page[22..26].copy_from_slice(&crc.to_le_bytes());
+        page
+    }
+
+    /// A minimal but valid three-page OGG Opus stream: the "OpusHead" identification packet
+    /// (beginning-of-stream), an empty "OpusTags" comment packet, then one throwaway audio
+    /// packet so the OGG demuxer considers the logical stream ready. `load_clip` rejects the
+    /// file for its codec before any of the audio packet's bytes are decoded.
+    fn minimal_ogg_opus_bytes() -> Vec<u8> {
+        const SERIAL: u32 = 0x1234;
+        let mut id_packet = Vec::new();
+        id_packet.extend_from_slice(b"OpusHead");
+        id_packet.push(1); // version
+        id_packet.push(2); // channel count
+        id_packet.extend_from_slice(&0u16.to_le_bytes()); // pre-skip
+        id_packet.extend_from_slice(&48_000u32.to_le_bytes()); // original sample rate
+        id_packet.extend_from_slice(&0u16.to_le_bytes()); // output gain
+        id_packet.push(0); // channel mapping (RTP)
+        assert_eq!(id_packet.len(), 19);
+
+        let mut tags_packet = Vec::new();
+        tags_packet.extend_from_slice(b"OpusTags");
+        tags_packet.extend_from_slice(&0u32.to_le_bytes()); // vendor string length
+        tags_packet.extend_from_slice(&0u32.to_le_bytes()); // comment count
+
+        let audio_packet = [0x00u8];
+
+        let mut bytes = Vec::new();
+        bytes.extend(ogg_page(SERIAL, 0, 0x02, 0, &[&id_packet])); // beginning-of-stream
+        bytes.extend(ogg_page(SERIAL, 1, 0x00, 0, &[&tags_packet]));
+        bytes.extend(ogg_page(SERIAL, 2, 0x04, 960, &[&audio_packet])); // end-of-stream
+        bytes
+    }
+
+    #[test]
+    fn load_clip_rejects_opus_with_the_unsupported_message() {
+        let path = std::env::temp_dir().join(format!("dhmix-test-opus-{}.opus", std::process::id()));
+        std::fs::write(&path, minimal_ogg_opus_bytes()).unwrap();
+        let result = load_clip(&path);
+        let _ = std::fs::remove_file(&path);
+        let err = result.expect_err("an Opus file must be rejected, not decoded");
+        assert_eq!(err.to_string(), OPUS_UNSUPPORTED);
     }
 }

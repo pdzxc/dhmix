@@ -52,7 +52,7 @@ pub fn spawn(inputs: EngineInputs) -> EngineHandle {
     let stop = Arc::new(AtomicBool::new(false));
     let stop_flag = stop.clone();
     let thread = std::thread::Builder::new()
-        .name("streammix-engine".into())
+        .name("dhmix-engine".into())
         .spawn(move || run(inputs, stop_flag))
         .expect("spawn engine thread");
     EngineHandle { stop, thread: Some(thread) }

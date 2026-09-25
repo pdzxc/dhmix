@@ -1,5 +1,6 @@
-//! Global hotkeys that work while a game or OBS has focus:
-//! Ctrl+Alt+M toggles mute on the chosen strip, Ctrl+Alt+1..9 fire soundboard pads.
+//! Global hotkeys that work while a game or OBS has focus: Ctrl+Alt+M toggles mute on the chosen
+//! strip, Ctrl+Alt+1..9 fire soundboard pads. Presses are delivered to a handler on the main
+//! thread by the OS, so they keep working while the window is hidden in the tray.
 
 use anyhow::Result;
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
@@ -13,8 +14,6 @@ pub enum HotkeyAction {
 
 pub struct Hotkeys {
     _manager: GlobalHotKeyManager,
-    mute_id: u32,
-    pad_ids: Vec<u32>,
 }
 
 const PAD_CODES: [Code; 9] = [
@@ -29,8 +28,18 @@ const PAD_CODES: [Code; 9] = [
     Code::Digit9,
 ];
 
+/// Which action a registered hotkey id stands for.
+fn action_for(id: u32, mute_id: u32, pad_ids: &[u32]) -> Option<HotkeyAction> {
+    if id == mute_id {
+        Some(HotkeyAction::ToggleMute)
+    } else {
+        pad_ids.iter().position(|pad| *pad == id).map(HotkeyAction::Pad)
+    }
+}
+
 impl Hotkeys {
-    pub fn register() -> Result<Self> {
+    /// Registers the keys and calls `on_action` for every press, from the OS event thread.
+    pub fn register(on_action: impl Fn(HotkeyAction) + Send + Sync + 'static) -> Result<Self> {
         let manager = GlobalHotKeyManager::new()?;
         let mods = Modifiers::CONTROL | Modifiers::ALT;
         let mute = HotKey::new(Some(mods), Code::KeyM);
@@ -41,25 +50,31 @@ impl Hotkeys {
             manager.register(hk)?;
             pad_ids.push(hk.id());
         }
-        Ok(Self { _manager: manager, mute_id: mute.id(), pad_ids })
+        let mute_id = mute.id();
+        GlobalHotKeyEvent::set_event_handler(Some(move |event: GlobalHotKeyEvent| {
+            if event.state == HotKeyState::Pressed {
+                if let Some(action) = action_for(event.id, mute_id, &pad_ids) {
+                    on_action(action);
+                }
+            }
+        }));
+        Ok(Self { _manager: manager })
     }
 
     pub fn description() -> &'static str {
         "Ctrl+Alt+M mute · Ctrl+Alt+1-9 pads"
     }
+}
 
-    pub fn poll(&self) -> Vec<HotkeyAction> {
-        let mut actions = Vec::new();
-        while let Ok(event) = GlobalHotKeyEvent::receiver().try_recv() {
-            if event.state != HotKeyState::Pressed {
-                continue;
-            }
-            if event.id == self.mute_id {
-                actions.push(HotkeyAction::ToggleMute);
-            } else if let Some(pad) = self.pad_ids.iter().position(|id| *id == event.id) {
-                actions.push(HotkeyAction::Pad(pad));
-            }
-        }
-        actions
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hotkey_ids_map_to_mute_and_pads_and_nothing_else() {
+        let pads = [10, 11, 12];
+        assert_eq!(action_for(7, 7, &pads), Some(HotkeyAction::ToggleMute));
+        assert_eq!(action_for(12, 7, &pads), Some(HotkeyAction::Pad(2)));
+        assert_eq!(action_for(99, 7, &pads), None);
     }
 }

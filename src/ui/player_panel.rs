@@ -1,16 +1,18 @@
 //! Soundboard pads and the music player, shown at the top of the PLAYER strip.
 
-use super::strip_panel::{fine_tune_window, fx_row, pan_row, pan_slider_width, routing_rows, state_row};
+use super::strip_panel::{fine_tune_window, fx_row, routing_rows, state_column};
 use super::widgets::{self, ColumnFrame, Geometry, COLOR_ACTIVE, COLOR_ASSIGNED, PAD_SPACING};
 use crate::engine::player::{load_clip, Clip, PlayerCommand, PlayerStatus};
 use crate::engine::{Meters, StripSettings};
-use crate::PLAYER_STRIP;
+use crate::{db_to_gain, PLAYER_STRIP};
 use crate::preset::NUM_PADS;
 use crate::SAMPLE_RATE;
 use crossbeam_channel::Sender;
 use egui::Ui;
+use parking_lot::Mutex;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 
 const PAD_COLUMNS: usize = 3;
 const AUDIO_EXTENSIONS: [&str; 7] = ["mp3", "wav", "flac", "ogg", "m4a", "aac", "mp4"];
@@ -32,12 +34,28 @@ pub struct Pad {
     pub clip: Clip,
 }
 
-pub struct PlayerPanel {
+/// The loaded pads and their volume, shared with the hotkey handler so Ctrl+Alt+1..9 can fire
+/// a pad from the OS event thread while the window is hidden.
+pub struct PadBank {
     pub pads: Vec<Option<Pad>>,
+}
+
+impl PadBank {
+    /// Plays `pad` if a clip is loaded on it.
+    pub fn trigger(&self, tx: &Sender<PlayerCommand>, pad: usize) {
+        if let Some(Some(p)) = self.pads.get(pad) {
+            let _ = tx.send(PlayerCommand::PlayPad { pad, samples: p.clip.samples.clone() });
+        }
+    }
+}
+
+pub struct PlayerPanel {
+    pub bank: Arc<Mutex<PadBank>>,
     pub music: Option<(PathBuf, Clip)>,
     pub music_loop: bool,
-    pub music_gain: f32,
-    pub pad_gain: f32,
+    /// The music's and the pads' own faders, in dB, ahead of the PLAYER strip's fader.
+    pub music_db: f32,
+    pub pads_db: f32,
     pub last_error: Option<String>,
     tx: Sender<PlayerCommand>,
     status: std::sync::Arc<PlayerStatus>,
@@ -47,11 +65,11 @@ pub struct PlayerPanel {
 impl PlayerPanel {
     pub fn new(tx: Sender<PlayerCommand>, status: std::sync::Arc<PlayerStatus>) -> Self {
         Self {
-            pads: (0..NUM_PADS).map(|_| None).collect(),
+            bank: Arc::new(Mutex::new(PadBank { pads: (0..NUM_PADS).map(|_| None).collect() })),
             music: None,
             music_loop: false,
-            music_gain: 1.0,
-            pad_gain: 1.0,
+            music_db: 0.0,
+            pads_db: 0.0,
             last_error: None,
             tx,
             status,
@@ -60,7 +78,16 @@ impl PlayerPanel {
     }
 
     pub fn pad_paths(&self) -> Vec<Option<PathBuf>> {
-        self.pads.iter().map(|p| p.as_ref().map(|p| p.path.clone())).collect()
+        self.bank.lock().pads.iter().map(|p| p.as_ref().map(|p| p.path.clone())).collect()
+    }
+
+    /// The handles a hotkey handler needs to fire pads without the panel.
+    pub fn hotkey_target(&self) -> (Arc<Mutex<PadBank>>, Sender<PlayerCommand>) {
+        (self.bank.clone(), self.tx.clone())
+    }
+
+    pub fn clear_pad(&self, pad: usize) {
+        self.bank.lock().pads[pad] = None;
     }
 
     pub fn music_path(&self) -> Option<PathBuf> {
@@ -69,7 +96,7 @@ impl PlayerPanel {
 
     pub fn assign_pad(&mut self, pad: usize, path: &Path) {
         match load_clip(path) {
-            Ok(clip) => self.pads[pad] = Some(Pad { path: path.to_path_buf(), clip }),
+            Ok(clip) => self.bank.lock().pads[pad] = Some(Pad { path: path.to_path_buf(), clip }),
             Err(e) => self.last_error = Some(format!("{}: {e:#}", path.display())),
         }
     }
@@ -88,28 +115,43 @@ impl PlayerPanel {
     }
 
     pub fn trigger_pad(&self, pad: usize) {
-        if let Some(Some(p)) = self.pads.get(pad) {
-            let _ = self.tx.send(PlayerCommand::PlayPad { pad, samples: p.clip.samples.clone(), gain: self.pad_gain });
-        }
+        self.bank.lock().trigger(&self.tx, pad);
     }
 
-    /// The whole PLAYER strip: music on top, pads beside the fader, then sends and state.
+    /// The whole PLAYER strip: music and the soundboard, each with its own fader and meter, then
+    /// the same effects, send-to rows and level block as an input strip.
     pub fn show(&mut self, ui: &mut Ui, settings: &mut StripSettings, meters: &Meters, fine_tune_open: &mut bool, frame: ColumnFrame) {
         let ColumnFrame { geo, fader_height, any_solo } = frame;
-        self.music_controls(ui, geo);
-        widgets::section(ui, "Soundboard");
         let silenced = settings.mute || (any_solo && !settings.solo);
+        widgets::section(ui, "Music");
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(geo.left);
+                self.music_controls(ui, geo);
+            });
+            if widgets::fader(ui, &mut self.music_db, widgets::FADER_MIN_HEIGHT) {
+                let _ = self.tx.send(PlayerCommand::MusicGain(db_to_gain(self.music_db)));
+            }
+            widgets::meter(ui, self.status.music_peak.load(), widgets::FADER_MIN_HEIGHT, widgets::METER_WIDTH);
+        });
+        widgets::section(ui, "Soundboard");
         ui.horizontal_top(|ui| {
             ui.vertical(|ui| {
                 ui.set_width(geo.left);
                 self.pad_grid(ui, geo);
-                ui.add_space(widgets::SECTION_GAP);
-                widgets::section(ui, "Send to");
-                routing_rows(ui, &mut settings.routing, PLAYER_STRIP, geo);
-                ui.add_space(widgets::SECTION_GAP);
-                state_row(ui, settings, geo);
-                fx_row(ui, settings, geo);
             });
+            if widgets::fader(ui, &mut self.pads_db, widgets::FADER_MIN_HEIGHT) {
+                let _ = self.tx.send(PlayerCommand::PadsGain(db_to_gain(self.pads_db)));
+            }
+            widgets::meter(ui, self.status.pads_peak.load(), widgets::FADER_MIN_HEIGHT, widgets::METER_WIDTH);
+        });
+        widgets::section(ui, "Audio effects");
+        fx_row(ui, settings, geo.fx_led);
+        widgets::pan(ui, &mut settings.pan, geo.inner);
+        widgets::section(ui, "Send to");
+        routing_rows(ui, &mut settings.routing, PLAYER_STRIP, geo);
+        widgets::section(ui, "Level");
+        ui.horizontal_top(|ui| {
             ui.scope(|ui| {
                 if silenced {
                     ui.set_opacity(0.45);
@@ -117,33 +159,33 @@ impl PlayerPanel {
                 widgets::fader(ui, &mut settings.gain_db, fader_height);
                 widgets::meter(ui, meters.strips[PLAYER_STRIP].load(), fader_height, widgets::METER_WIDTH);
             });
+            widgets::level_column(ui, geo.side_button.x, |ui| state_column(ui, settings, geo, fine_tune_open));
         });
-        pan_row(ui, &mut settings.pan, geo.inner);
-        widgets::led(ui, fine_tune_open, "FINE-TUNE", widgets::COLOR_HEADING, geo.fine_tune_button, "All effect parameters in a separate window.");
         if let Some(err) = &self.last_error {
             widgets::error_label(ui, err);
         }
         fine_tune_window(ui.ctx(), PLAYER_STRIP, settings, meters, fine_tune_open);
     }
 
+    /// Load / play / stop / loop, the track name and clock, and the seek bar.
     fn music_controls(&mut self, ui: &mut Ui, geo: Geometry) {
-        widgets::section(ui, "Music");
         let playing = self.status.music_playing.load(Ordering::Relaxed);
         let loaded = self.music.is_some();
         ui.horizontal(|ui| {
-            if ui.button("Load…").on_hover_text("MP3, WAV, FLAC, OGG or M4A").clicked() {
+            if widgets::button(ui, "LOAD…", widgets::TRANSPORT_BUTTON_SIZE, "MP3, WAV, FLAC, OGG (Vorbis) or M4A") {
                 if let Some(path) = pick_audio_file() {
                     self.load_music(&path, true);
                 }
             }
-            let play_label = if playing { "Pause" } else { "Play" };
-            if ui.add_enabled(loaded, egui::Button::new(play_label)).clicked() {
-                let _ = self.tx.send(PlayerCommand::MusicPlayPause);
-            }
-            if ui.add_enabled(loaded, egui::Button::new("Stop")).clicked() {
-                let _ = self.tx.send(PlayerCommand::MusicStop);
-            }
-            if widgets::led(ui, &mut self.music_loop, "LOOP", COLOR_ACTIVE, geo.led_triple, "Start again when the track ends.") {
+            ui.add_enabled_ui(loaded, |ui| {
+                if widgets::button(ui, if playing { "PAUSE" } else { "PLAY" }, widgets::TRANSPORT_BUTTON_SIZE, "") {
+                    let _ = self.tx.send(PlayerCommand::MusicPlayPause);
+                }
+                if widgets::button(ui, "STOP", widgets::TRANSPORT_BUTTON_SIZE, "") {
+                    let _ = self.tx.send(PlayerCommand::MusicStop);
+                }
+            });
+            if widgets::led(ui, &mut self.music_loop, "LOOP", COLOR_ACTIVE, widgets::TRANSPORT_BUTTON_SIZE, "Start again when the track ends.") {
                 let _ = self.tx.send(PlayerCommand::MusicLoop(self.music_loop));
             }
         });
@@ -157,8 +199,8 @@ impl PlayerPanel {
             widgets::hint(ui, clock(pos, len));
         });
         let mut t = self.seek_target.unwrap_or(pos / len);
-        ui.spacing_mut().slider_width = pan_slider_width(geo.inner);
-        let slider = ui.add_enabled(loaded, egui::Slider::new(&mut t, 0.0..=1.0).show_value(false).text("seek"));
+        ui.spacing_mut().slider_width = widgets::labelled_slider_width(geo.left);
+        let slider = ui.add_enabled(loaded, egui::Slider::new(&mut t, 0.0..=1.0).show_value(false).text("seek")).on_hover_cursor(egui::CursorIcon::PointingHand);
         if slider.dragged() || slider.changed() {
             self.seek_target = Some(t);
         }
@@ -167,29 +209,20 @@ impl PlayerPanel {
                 let _ = self.tx.send(PlayerCommand::MusicSeek(target));
             }
         }
-        if ui.add(egui::Slider::new(&mut self.music_gain, 0.0..=1.5).show_value(false).text("music vol")).changed() {
-            let _ = self.tx.send(PlayerCommand::MusicGain(self.music_gain));
-        }
     }
 
+    /// The three-by-three pad grid with "Stop all" beneath it (always drawn, greyed while
+    /// nothing sounds, so the block never reflows).
     fn pad_grid(&mut self, ui: &mut Ui, geo: Geometry) {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().slider_width = pan_slider_width(geo.left);
-            ui.add(egui::Slider::new(&mut self.pad_gain, 0.0..=1.5).show_value(false).text("pad vol"));
-            if self.status.pads_sounding.load(Ordering::Relaxed) > 0 && ui.small_button("Stop all").clicked() {
-                let _ = self.tx.send(PlayerCommand::StopPads);
-            }
-        });
         let mut to_assign: Option<usize> = None;
         let mut to_clear: Option<usize> = None;
         let mut to_play: Option<usize> = None;
+        // One lock for the whole grid; the names are all it needs.
+        let names: Vec<Option<String>> = self.bank.lock().pads.iter().map(|p| p.as_ref().map(|p| widgets::shorten(&p.clip.name, 8))).collect();
         egui::Grid::new("pads").spacing([PAD_SPACING, PAD_SPACING]).show(ui, |ui| {
             for (i, tip) in PAD_TIPS.iter().enumerate() {
-                let filled = self.pads[i].is_some();
-                let name = match &self.pads[i] {
-                    Some(p) => widgets::shorten(&p.clip.name, 8),
-                    None => "add".to_string(),
-                };
+                let filled = names[i].is_some();
+                let name = names[i].clone().unwrap_or_else(|| "add".to_string());
                 let fill = if filled { COLOR_ASSIGNED } else { widgets::COLOR_INSET };
                 let text_color = if filled { widgets::on_color(fill) } else { widgets::COLOR_TEXT_MUTED };
                 let text = egui::RichText::new(format!("{}  {name}", i + 1)).size(10.0).strong().color(text_color);
@@ -216,11 +249,17 @@ impl PlayerPanel {
                 }
             }
         });
+        let sounding = self.status.pads_sounding.load(Ordering::Relaxed) > 0;
+        ui.add_enabled_ui(sounding, |ui| {
+            if widgets::button(ui, "STOP ALL", widgets::STOP_ALL_SIZE, "Silence every pad that is playing.") {
+                let _ = self.tx.send(PlayerCommand::StopPads);
+            }
+        });
         if let Some(i) = to_play {
             self.trigger_pad(i);
         }
         if let Some(i) = to_clear {
-            self.pads[i] = None;
+            self.clear_pad(i);
         }
         if let Some(i) = to_assign {
             if let Some(path) = pick_audio_file() {
@@ -240,4 +279,56 @@ fn clock(pos_frames: f32, len_frames: f32) -> String {
         format!("{}:{:02}", (secs / 60.0) as u32, (secs % 60.0) as u32)
     };
     format!("{} / {}", fmt(pos_frames), fmt(len_frames))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::player::Player;
+
+    /// The pads row (the pads-volume slider, its trailing label, and the always-present "Stop
+    /// all" button) must fit `geo.left`, the width `PlayerPanel::show` actually gives it, or
+    /// "Stop all" is clipped by the floating Player window's edge.
+    #[test]
+    fn pads_row_fits_the_player_windows_left_column() {
+        let geo = Geometry::for_column(widgets::PLAYER_WINDOW_WIDTH + 2.0 * widgets::PANEL_PADDING);
+        let (_player, tx, status) = Player::new();
+        let panel = std::cell::RefCell::new(PlayerPanel::new(tx, status));
+        let width = std::cell::Cell::new(0.0);
+        widgets::run_themed_test_ui(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(geo.left);
+                panel.borrow_mut().pad_grid(ui, geo);
+                width.set(ui.min_rect().width());
+            });
+        });
+        assert!(width.get() <= geo.left + 1e-3, "pads row is {} px wide in the Player window's {} px left column", width.get(), geo.left);
+    }
+
+    /// `trigger` sends `PlayPad` for a loaded pad, and nothing at all for an empty one, so firing
+    /// an unassigned hotkey pad is silently a no-op rather than playing stale or empty audio.
+    #[test]
+    fn trigger_sends_play_pad_for_a_loaded_pad_and_nothing_for_an_empty_one() {
+        use crate::engine::player::{Clip, PlayerCommand};
+        let (tx, rx) = crossbeam_channel::unbounded();
+        let samples = std::sync::Arc::new(vec![0.25f32, -0.25]);
+        let bank = PadBank {
+            pads: vec![Some(Pad { path: PathBuf::from("clip.wav"), clip: Clip { name: "clip".into(), samples: samples.clone() } }), None],
+        };
+
+        bank.trigger(&tx, 0);
+        match rx.try_recv().expect("the loaded pad must send a command") {
+            PlayerCommand::PlayPad { pad, samples: sent } => {
+                assert_eq!(pad, 0);
+                assert!(std::sync::Arc::ptr_eq(&sent, &samples));
+            }
+            _ => panic!("expected PlayPad for the loaded pad"),
+        }
+
+        bank.trigger(&tx, 1);
+        assert!(rx.try_recv().is_err(), "an empty pad must send nothing");
+
+        bank.trigger(&tx, 99);
+        assert!(rx.try_recv().is_err(), "an out-of-range pad must send nothing, not panic");
+    }
 }

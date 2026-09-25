@@ -53,13 +53,20 @@ pub struct BusSettings {
     pub mute: bool,
     pub bass_db: f32,
     pub treble_db: f32,
-    pub limiter: bool,
+    /// Limiter ceiling in dB: peaks above it are held down. Presets saved before the ceiling
+    /// was adjustable carry no value and get the default.
+    #[serde(default = "default_limit_db")]
+    pub limit_db: f32,
 }
 
 impl Default for BusSettings {
     fn default() -> Self {
-        Self { gain_db: 0.0, mute: false, bass_db: 0.0, treble_db: 0.0, limiter: true }
+        Self { gain_db: 0.0, mute: false, bass_db: 0.0, treble_db: 0.0, limit_db: LIMIT_DEFAULT_DB }
     }
+}
+
+fn default_limit_db() -> f32 {
+    LIMIT_DEFAULT_DB
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
@@ -85,6 +92,10 @@ impl Default for MixSettings {
 
 pub const GAIN_DB_RANGE: std::ops::RangeInclusive<f32> = -60.0..=12.0;
 pub const RATIO_RANGE: std::ops::RangeInclusive<f32> = 1.0..=20.0;
+/// Bus limiter ceiling: 0 dB only stops clipping; lower values tame a loud output.
+pub const LIMIT_DB_RANGE: std::ops::RangeInclusive<f32> = -40.0..=0.0;
+/// Just under full scale, so inter-sample peaks do not clip the converter.
+pub const LIMIT_DEFAULT_DB: f32 = -0.5;
 
 impl MixSettings {
     pub fn any_solo(&self) -> bool {
@@ -102,6 +113,7 @@ impl MixSettings {
         }
         for b in self.buses.iter_mut() {
             b.gain_db = b.gain_db.clamp(*GAIN_DB_RANGE.start(), *GAIN_DB_RANGE.end());
+            b.limit_db = b.limit_db.clamp(*LIMIT_DB_RANGE.start(), *LIMIT_DB_RANGE.end());
         }
         self
     }

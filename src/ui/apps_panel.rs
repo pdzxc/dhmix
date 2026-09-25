@@ -43,6 +43,10 @@ fn endpoint_label(endpoint: &Endpoint, io: &IoSettings) -> String {
 }
 
 impl AppsPanel {
+    pub fn new(open: bool) -> Self {
+        Self { open, ..Self::default() }
+    }
+
     /// Draws the window. Returns true when the user moved an app, so the caller refreshes its
     /// snapshot right away instead of waiting for the next timer tick.
     pub fn show(&mut self, ctx: &egui::Context, io: &IoSettings, sessions: &[AppSession], endpoints: &[Endpoint]) -> bool {

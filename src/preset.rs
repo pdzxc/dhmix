@@ -208,7 +208,7 @@ mod tests {
         p.mix.strips[2].eq.bass_db = 3.0;
         p.io.strip_inputs[0] = Some("Mic".into());
         p.pads[3] = Some(PathBuf::from("C:/sounds/airhorn.mp3"));
-        let dir = std::env::temp_dir().join(format!("streammix-preset-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("dhmix-preset-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("p.json");
         p.save(&path).unwrap();
@@ -222,7 +222,7 @@ mod tests {
             pads: vec![Some(PathBuf::from("a.mp3")), None, Some(PathBuf::from("c.mp3"))],
             ..Preset::default()
         };
-        let dir = std::env::temp_dir().join(format!("streammix-preset-short-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("dhmix-preset-short-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("short.json");
         p.save(&path).unwrap();
@@ -242,7 +242,8 @@ mod tests {
         p.mix.strips[0].pan = -7.0;
         p.mix.strips[0].comp.ratio = -3.0;
         p.mix.buses[1].gain_db = -999.0;
-        let dir = std::env::temp_dir().join(format!("streammix-clamp-{}", std::process::id()));
+        p.mix.buses[1].limit_db = 40.0;
+        let dir = std::env::temp_dir().join(format!("dhmix-clamp-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("p.json");
         p.save(&path).unwrap();
@@ -251,6 +252,11 @@ mod tests {
         assert_eq!(loaded.mix.strips[0].pan, -1.0);
         assert_eq!(loaded.mix.strips[0].comp.ratio, 1.0);
         assert_eq!(loaded.mix.buses[1].gain_db, -60.0);
+        assert_eq!(
+            loaded.mix.buses[1].limit_db,
+            *crate::engine::settings::LIMIT_DB_RANGE.end(),
+            "limit_db above 0 dB is clamped to the top of LIMIT_DB_RANGE"
+        );
         let _ = std::fs::remove_dir_all(dir);
     }
 
@@ -281,7 +287,7 @@ mod tests {
         legacy["io"]["bus_outputs"] = serde_json::json!(["A1", "A2", "A3", "A4", "A5", "B1", "B2"]);
         legacy["hotkey_strip"] = serde_json::json!(6);
 
-        let dir = std::env::temp_dir().join(format!("streammix-preset-legacy-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("dhmix-preset-legacy-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("legacy.json");
         std::fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
@@ -326,6 +332,34 @@ mod tests {
             vec![false, false, false, true, true],
             "A4/A5 routing is dropped; B1 -> new index 3, B2 -> new index 4"
         );
+    }
+
+    #[test]
+    fn load_gives_the_default_ceiling_to_a_bus_saved_before_the_limiter_was_a_knob() {
+        // Presets saved before the ceiling was adjustable carry a `limiter: bool` and no
+        // `limit_db`; the field is renamed, not migrated, so the old key is simply unknown now.
+        let mut legacy = serde_json::to_value(Preset::default()).unwrap();
+        let buses = legacy["mix"]["buses"].as_array_mut().unwrap();
+        for bus in buses.iter_mut() {
+            let bus = bus.as_object_mut().unwrap();
+            bus.remove("limit_db");
+            bus.insert("limiter".to_string(), serde_json::json!(true));
+        }
+
+        let dir = std::env::temp_dir().join(format!("dhmix-preset-legacy-limiter-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("legacy-limiter.json");
+        std::fs::write(&path, serde_json::to_vec_pretty(&legacy).unwrap()).unwrap();
+
+        let loaded = Preset::load(&path).unwrap();
+        for bus in &loaded.mix.buses {
+            assert_eq!(
+                bus.limit_db,
+                crate::engine::settings::LIMIT_DEFAULT_DB,
+                "a bus with no saved limit_db loads with the default ceiling"
+            );
+        }
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

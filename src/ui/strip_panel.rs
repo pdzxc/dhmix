@@ -1,8 +1,9 @@
-//! One input strip: routing LEDs, mono/solo/mute and effect LEDs on the left, ruler fader and
-//! meter on the right; below them the COMP / GATE knobs and the tone-and-echo pad. Detailed
-//! effect sliders open in a floating window so the strip never grows.
+//! One input strip, top to bottom: the colour pad beside the COMP / GATE knobs with the pan
+//! control under them, a row of effect LEDs, the A / B send-to rows, then the ruler fader with
+//! its meter, the MONO / SOLO / MUTE column and the app list. Detailed effect sliders open in a
+//! floating window so the strip never grows.
 
-use super::widgets::{self, Geometry, COLOR_ACTIVE, COLOR_MUTE, COLOR_SOLO, COLOR_VIRTUAL};
+use super::widgets::{self, Geometry, COLOR_ACTIVE, COLOR_MUTE, COLOR_SOLO};
 use crate::dsp::compressor::CompressorSettings;
 use crate::dsp::echo::EchoSettings;
 use crate::dsp::eq::EqSettings;
@@ -13,6 +14,10 @@ use egui::Ui;
 
 const TIP_HARDWARE_ROUTE: &str = "Hardware out: speakers or headphones";
 const TIP_VIRTUAL_ROUTE: &str = "Virtual out: what OBS, Discord or a call hears";
+/// What each send-to row is: the A row monitors (you hear it), the B row broadcasts (your
+/// stream, recording or call hears it).
+const HINT_HARDWARE_ROUTE: &str = "Monitor";
+const HINT_VIRTUAL_ROUTE: &str = "Broadcast";
 /// Knob travel, like the console's 0..10 dials.
 const KNOB_RANGE: std::ops::RangeInclusive<f32> = 0.0..=10.0;
 const KNOB_OFF: f32 = 0.05;
@@ -25,6 +30,9 @@ const TILT_DB: f32 = 8.0;
 /// Top of the pad is this much echo in the mix.
 const ECHO_MAX_MIX: f32 = 0.6;
 const PAD_OFF: f32 = 0.02;
+/// The bottom share of the pad where echo stays off, so a nudge upward while setting the tone
+/// does not add echo; the pad draws a line there. Echo ramps from that line to the top.
+pub const ECHO_DEAD_ZONE: f32 = 0.25;
 
 /// Maps the compressor to one 0..10 dial: 0 is off, 10 is a -60 dB threshold.
 pub fn comp_amount(c: &CompressorSettings) -> f32 {
@@ -76,7 +84,7 @@ pub fn set_tone_tilt(eq: &mut EqSettings, tilt: f32) {
     }
 }
 
-/// Pad Y: 0 (dry) .. 1 (full echo). Reads 0 while the echo is off.
+/// Echo amount 0 (dry) .. 1 (full echo). Reads 0 while the echo is off.
 pub fn echo_amount(echo: &EchoSettings) -> f32 {
     if echo.enabled {
         (echo.mix / ECHO_MAX_MIX).clamp(0.0, 1.0)
@@ -90,6 +98,20 @@ pub fn set_echo_amount(echo: &mut EchoSettings, amount: f32) {
     echo.enabled = amount > PAD_OFF;
     if echo.enabled {
         echo.mix = amount * ECHO_MAX_MIX;
+    }
+}
+
+/// Pad Y (0 bottom .. 1 top) to echo amount: nothing inside the dead zone, then a ramp to 1.
+pub fn pad_y_to_echo(y: f32) -> f32 {
+    ((y - ECHO_DEAD_ZONE) / (1.0 - ECHO_DEAD_ZONE)).clamp(0.0, 1.0)
+}
+
+/// Echo amount back to the pad Y that shows it; 0 sits on the dead-zone line.
+pub fn echo_to_pad_y(amount: f32) -> f32 {
+    if amount <= 0.0 {
+        0.0
+    } else {
+        ECHO_DEAD_ZONE + amount.clamp(0.0, 1.0) * (1.0 - ECHO_DEAD_ZONE)
     }
 }
 
@@ -110,17 +132,24 @@ pub struct StripView<'a> {
 }
 
 impl StripView<'_> {
-    /// Console order, top to bottom: colour pad, knobs with effect LEDs, pan, then the fader with
-    /// its meter and the two button columns (routes; mono / solo / mute).
+    /// Console order, top to bottom: colour pad beside the knobs and pan, effect LEDs, the send-to
+    /// rows, then the fader with its meter, the mono / solo / mute column and the app list.
     pub fn show(&mut self, ui: &mut Ui) {
         let silenced = self.settings.mute || (self.any_solo && !self.settings.solo);
-        widgets::section(ui, "Colour");
-        self.colour_pad(ui);
-        widgets::section(ui, "Effects");
-        self.knobs_and_leds(ui);
-        pan_row(ui, &mut self.settings.pan, self.geo.inner);
-        widgets::section(ui, "Level and send to");
         let geo = self.geo;
+        widgets::section(ui, "Audio effects");
+        ui.horizontal_top(|ui| {
+            self.colour_pad(ui);
+            ui.vertical(|ui| {
+                ui.set_width(widgets::KNOB_BLOCK_WIDTH);
+                self.knobs(ui);
+                widgets::pan(ui, &mut self.settings.pan, widgets::KNOB_BLOCK_WIDTH);
+            });
+        });
+        fx_row(ui, self.settings, geo.fx_led);
+        widgets::section(ui, "Send to");
+        routing_rows(ui, &mut self.settings.routing, self.index, geo);
+        widgets::section(ui, "Level");
         ui.horizontal_top(|ui| {
             ui.scope(|ui| {
                 if silenced {
@@ -129,14 +158,7 @@ impl StripView<'_> {
                 widgets::fader(ui, &mut self.settings.gain_db, self.fader_height);
                 widgets::meter(ui, self.meters.strips[self.index].load(), self.fader_height, widgets::METER_WIDTH);
             });
-            ui.vertical(|ui| {
-                ui.set_width(geo.side_button.x);
-                routing_column(ui, &mut self.settings.routing, self.index, geo);
-            });
-            ui.vertical(|ui| {
-                ui.set_width(geo.side_button.x);
-                state_column(ui, self.settings, geo, self.fine_tune_open);
-            });
+            widgets::level_column(ui, geo.side_button.x, |ui| state_column(ui, self.settings, geo, self.fine_tune_open));
             widgets::app_list(ui, geo.strip_apps, self.apps, self.apps_empty);
         });
         self.fine_tune_window(ui.ctx());
@@ -145,17 +167,16 @@ impl StripView<'_> {
     fn colour_pad(&mut self, ui: &mut Ui) {
         let s = &mut self.settings;
         let mut tilt = tone_tilt(&s.eq);
-        let mut echo = echo_amount(&s.echo);
-        if widgets::xy_pad(ui, &mut tilt, &mut echo, self.geo.xy_pad, ["Lo", "Hi", "ECHO"], "Colour pad: left is warm, right is bright; up adds echo. Double-click resets.") {
+        let mut y = echo_to_pad_y(echo_amount(&s.echo));
+        if widgets::xy_pad(ui, &mut tilt, &mut y, self.geo.xy_pad, ["Lo", "Hi", "ECHO"], Some(ECHO_DEAD_ZONE), "Tone and echo: left is warm, right is bright. Echo starts above the line and grows towards the top. Double-click resets.") {
             set_tone_tilt(&mut s.eq, tilt);
-            set_echo_amount(&mut s.echo, echo);
+            set_echo_amount(&mut s.echo, pad_y_to_echo(y));
         }
     }
 
-    fn knobs_and_leds(&mut self, ui: &mut Ui) {
-        let geo = self.geo;
+    fn knobs(&mut self, ui: &mut Ui) {
         let s = &mut self.settings;
-        ui.horizontal_top(|ui| {
+        ui.horizontal(|ui| {
             let mut comp = comp_amount(&s.comp);
             if widgets::knob(ui, &mut comp, KNOB_RANGE, 0.0, "COMP", "Even out loud and quiet moments.") {
                 set_comp_amount(&mut s.comp, comp);
@@ -164,17 +185,6 @@ impl StripView<'_> {
             if widgets::knob(ui, &mut gate, KNOB_RANGE, 0.0, "GATE", "Close the mic when you are not talking.") {
                 set_gate_amount(&mut s.gate, gate);
             }
-            ui.vertical(|ui| {
-                ui.add_space(widgets::SECTION_GAP);
-                ui.horizontal(|ui| {
-                    widgets::led(ui, &mut s.denoise, "DENOISE", COLOR_ACTIVE, geo.fx_led, "Remove fans, hum and keyboard noise (RNNoise).");
-                    widgets::led(ui, &mut s.eq.enabled, "EQ", COLOR_ACTIVE, geo.fx_led, "Shape the tone: bass, mid, treble, low cut.");
-                });
-                ui.horizontal(|ui| {
-                    widgets::led(ui, &mut s.echo.enabled, "ECHO", COLOR_ACTIVE, geo.fx_led, "Repeating delay effect.");
-                    widgets::led(ui, &mut s.reverb.enabled, "REVERB", COLOR_ACTIVE, geo.fx_led, "Room ambience.");
-                });
-            });
         });
     }
 
@@ -200,70 +210,42 @@ pub fn fine_tune_window(ctx: &egui::Context, index: usize, s: &mut StripSettings
                 if !s.gate.enabled {
                     widgets::hint(ui, "Off. Turn the GATE knob to enable.");
                 }
-                ui.add(egui::Slider::new(&mut s.gate.threshold_db, -80.0..=0.0).text("open at dB"));
-                ui.add(egui::Slider::new(&mut s.gate.release_ms, 10.0..=1000.0).text("release ms"));
+                widgets::slider(ui, egui::Slider::new(&mut s.gate.threshold_db, -80.0..=0.0).text("open at dB"));
+                widgets::slider(ui, egui::Slider::new(&mut s.gate.release_ms, 10.0..=1000.0).text("release ms"));
                 let open = meters.gate_open[index].load(std::sync::atomic::Ordering::Relaxed);
                 widgets::hint(ui, if s.gate.enabled && !open { "Gate closed" } else { "Gate open" });
 
                 widgets::section(ui, "EQ");
                 widgets::led(ui, &mut s.eq.low_cut, "LOW CUT 80 Hz", COLOR_ACTIVE, egui::Vec2::new(widgets::FINE_TUNE_SLIDER_WIDTH, widgets::LED_HEIGHT), "Remove rumble and desk thumps.");
-                ui.add(egui::Slider::new(&mut s.eq.bass_db, -12.0..=12.0).text("bass dB"));
-                ui.add(egui::Slider::new(&mut s.eq.mid_db, -12.0..=12.0).text("mid dB"));
-                ui.add(egui::Slider::new(&mut s.eq.treble_db, -12.0..=12.0).text("treble dB"));
+                widgets::slider(ui, egui::Slider::new(&mut s.eq.bass_db, -12.0..=12.0).text("bass dB"));
+                widgets::slider(ui, egui::Slider::new(&mut s.eq.mid_db, -12.0..=12.0).text("mid dB"));
+                widgets::slider(ui, egui::Slider::new(&mut s.eq.treble_db, -12.0..=12.0).text("treble dB"));
 
                 widgets::section(ui, "Compressor");
                 if !s.comp.enabled {
                     widgets::hint(ui, "Off. Turn the COMP knob to enable.");
                 }
-                ui.add(egui::Slider::new(&mut s.comp.threshold_db, -60.0..=0.0).text("threshold dB"));
-                ui.add(egui::Slider::new(&mut s.comp.ratio, 1.0..=20.0).text("ratio"));
-                ui.add(egui::Slider::new(&mut s.comp.attack_ms, 0.1..=100.0).logarithmic(true).text("attack ms"));
-                ui.add(egui::Slider::new(&mut s.comp.release_ms, 10.0..=1000.0).logarithmic(true).text("release ms"));
-                ui.add(egui::Slider::new(&mut s.comp.makeup_db, 0.0..=24.0).text("makeup dB"));
+                widgets::slider(ui, egui::Slider::new(&mut s.comp.threshold_db, -60.0..=0.0).text("threshold dB"));
+                widgets::slider(ui, egui::Slider::new(&mut s.comp.ratio, 1.0..=20.0).text("ratio"));
+                widgets::slider(ui, egui::Slider::new(&mut s.comp.attack_ms, 0.1..=100.0).logarithmic(true).text("attack ms"));
+                widgets::slider(ui, egui::Slider::new(&mut s.comp.release_ms, 10.0..=1000.0).logarithmic(true).text("release ms"));
+                widgets::slider(ui, egui::Slider::new(&mut s.comp.makeup_db, 0.0..=24.0).text("makeup dB"));
                 widgets::hint(ui, format!("Reducing {:.1} dB", meters.reduction(index)));
 
                 widgets::section(ui, "Echo");
-                ui.add(egui::Slider::new(&mut s.echo.time_ms, 20.0..=2000.0).text("time ms"));
-                ui.add(egui::Slider::new(&mut s.echo.feedback, 0.0..=0.95).text("feedback"));
-                ui.add(egui::Slider::new(&mut s.echo.mix, 0.0..=1.0).text("mix"));
+                widgets::slider(ui, egui::Slider::new(&mut s.echo.time_ms, 20.0..=2000.0).text("time ms"));
+                widgets::slider(ui, egui::Slider::new(&mut s.echo.feedback, 0.0..=0.95).text("feedback"));
+                widgets::slider(ui, egui::Slider::new(&mut s.echo.mix, 0.0..=1.0).text("mix"));
 
                 widgets::section(ui, "Reverb");
-                ui.add(egui::Slider::new(&mut s.reverb.size, 0.0..=1.0).text("size"));
-                ui.add(egui::Slider::new(&mut s.reverb.damping, 0.0..=1.0).text("damping"));
-                ui.add(egui::Slider::new(&mut s.reverb.mix, 0.0..=1.0).text("mix"));
+                widgets::slider(ui, egui::Slider::new(&mut s.reverb.size, 0.0..=1.0).text("size"));
+                widgets::slider(ui, egui::Slider::new(&mut s.reverb.damping, 0.0..=1.0).text("damping"));
+                widgets::slider(ui, egui::Slider::new(&mut s.reverb.mix, 0.0..=1.0).text("mix"));
             });
     }
 }
 
-/// The pan slider shares its row with the "Fine-tune…" button.
-pub fn pan_slider_width(inner: f32) -> f32 {
-    (inner - PAN_ROW_FIXED).max(40.0)
-}
-
-/// Room the "pan" label and the "Fine-tune…" button take in the pan row.
-const PAN_ROW_FIXED: f32 = 132.0;
-
-/// Room the "pan" label alone takes when the slider has the row to itself.
-const PAN_LABEL_WIDTH: f32 = 36.0;
-
-/// A pan slider that really resets to centre on double-click (egui's slider does not by itself).
-pub fn pan_row(ui: &mut Ui, pan: &mut f32, inner: f32) {
-    ui.spacing_mut().slider_width = inner - PAN_LABEL_WIDTH;
-    let response = ui.add(egui::Slider::new(pan, -1.0..=1.0).show_value(false).text("pan")).on_hover_text("Left / right balance. Double-click to centre.");
-    if response.double_clicked() {
-        *pan = 0.0;
-    }
-}
-
-/// Routes stacked beside the fader: A1.. in green, then B1.. in blue.
-pub fn routing_column(ui: &mut Ui, routing: &mut [bool; NUM_BUSES], strip: usize, geo: Geometry) {
-    for (b, on) in routing.iter_mut().enumerate() {
-        let (color, tip) = if b < NUM_HW_BUSES { (COLOR_ACTIVE, TIP_HARDWARE_ROUTE) } else { (COLOR_VIRTUAL, TIP_VIRTUAL_ROUTE) };
-        ui.push_id((strip, b), |ui| widgets::led(ui, on, &bus_name(b), color, geo.side_button, tip));
-    }
-}
-
-/// MONO / SOLO / MUTE and the fine-tune opener, stacked beside the routes.
+/// MONO / SOLO / MUTE and the fine-tune opener, stacked beside the fader.
 pub fn state_column(ui: &mut Ui, s: &mut StripSettings, geo: Geometry, fine_tune_open: &mut bool) {
     widgets::led(ui, &mut s.mono, "MONO", COLOR_ACTIVE, geo.side_button, "Sum left and right into the centre. Use for a single microphone.");
     widgets::led(ui, &mut s.solo, "SOLO", COLOR_SOLO, geo.side_button, "Hear only soloed strips.");
@@ -271,40 +253,32 @@ pub fn state_column(ui: &mut Ui, s: &mut StripSettings, geo: Geometry, fine_tune
     widgets::led(ui, fine_tune_open, "FINE-TUNE", widgets::COLOR_HEADING, geo.fine_tune_button, "All effect parameters in a separate window.");
 }
 
-/// MONO / SOLO / MUTE.
-pub fn state_row(ui: &mut Ui, s: &mut StripSettings, geo: Geometry) {
+/// DENOISE / EQ / ECHO / REVERB in one row of `led`-sized LEDs.
+pub fn fx_row(ui: &mut Ui, s: &mut StripSettings, led: egui::Vec2) {
     ui.horizontal(|ui| {
-        widgets::led(ui, &mut s.mono, "MONO", COLOR_ACTIVE, geo.led_triple, "Sum left and right into the centre. Use for a single microphone.");
-        widgets::led(ui, &mut s.solo, "SOLO", COLOR_SOLO, geo.led_triple, "Hear only soloed strips.");
-        widgets::led(ui, &mut s.mute, "MUTE", COLOR_MUTE, geo.led_triple, "Silence this strip on every bus.");
+        widgets::led(ui, &mut s.denoise, "DENOISE", COLOR_ACTIVE, led, "Noise suppression, like Discord's: a neural filter (RNNoise) removes fans, hum and keyboard noise while keeping your voice.");
+        widgets::led(ui, &mut s.eq.enabled, "EQ", COLOR_ACTIVE, led, "Shape the tone: bass, mid, treble, low cut.");
+        widgets::led(ui, &mut s.echo.enabled, "ECHO", COLOR_ACTIVE, led, "Repeating delay effect.");
+        widgets::led(ui, &mut s.reverb.enabled, "REVERB", COLOR_ACTIVE, led, "Room ambience.");
     });
 }
 
-/// ECHO / REVERB.
-pub fn fx_row(ui: &mut Ui, s: &mut StripSettings, geo: Geometry) {
-    ui.horizontal(|ui| {
-        widgets::led(ui, &mut s.echo.enabled, "ECHO", COLOR_ACTIVE, geo.led_pair, "Repeating delay effect.");
-        widgets::led(ui, &mut s.reverb.enabled, "REVERB", COLOR_ACTIVE, geo.led_pair, "Room ambience.");
-    });
-}
-
-/// Two rows of LEDs: hardware outs A1..A3 in green, then virtual outs B1..B2 in blue.
+/// Two rows of small LEDs, each ending in what it does: hardware outs A1..A3 in green
+/// ("Monitor"), then virtual outs B1..B2 in blue ("Broadcast").
 pub fn routing_rows(ui: &mut Ui, routing: &mut [bool; NUM_BUSES], strip: usize, geo: Geometry) {
     let (hardware, virtual_buses) = routing.split_at_mut(NUM_HW_BUSES);
     ui.horizontal(|ui| {
         for (b, on) in hardware.iter_mut().enumerate() {
-            ui.push_id((strip, b), |ui| {
-                widgets::led(ui, on, &bus_name(b), COLOR_ACTIVE, geo.led_route_hardware, TIP_HARDWARE_ROUTE)
-            });
+            ui.push_id((strip, b), |ui| widgets::led(ui, on, &bus_name(b), widgets::bus_color(b), geo.route_led, TIP_HARDWARE_ROUTE));
         }
+        widgets::row_hint(ui, HINT_HARDWARE_ROUTE);
     });
     ui.horizontal(|ui| {
         for (offset, on) in virtual_buses.iter_mut().enumerate() {
             let b = NUM_HW_BUSES + offset;
-            ui.push_id((strip, b), |ui| {
-                widgets::led(ui, on, &bus_name(b), COLOR_VIRTUAL, geo.led_route_virtual, TIP_VIRTUAL_ROUTE)
-            });
+            ui.push_id((strip, b), |ui| widgets::led(ui, on, &bus_name(b), widgets::bus_color(b), geo.route_led, TIP_VIRTUAL_ROUTE));
         }
+        widgets::row_hint(ui, HINT_VIRTUAL_ROUTE);
     });
 }
 
@@ -412,16 +386,92 @@ mod tests {
         assert_eq!(eq.treble_db, PAD_OFF * TILT_DB);
     }
 
+    /// Lays out a whole input column (header, device picker, strip) the way `App::strips_row`
+    /// does and returns how tall its content came out beyond the fader.
+    fn rendered_fixed_height(fader_height: f32) -> f32 {
+        let geo = Geometry::for_column(widgets::column_width(widgets::WINDOW_SIZE.x - 2.0 * widgets::SECTION_GAP, crate::NUM_BUSES));
+        let meters = Meters::default();
+        // The test harness takes an `Fn` closure, so the strip's state lives in cells.
+        let settings = std::cell::RefCell::new(StripSettings::default());
+        let open = std::cell::Cell::new(false);
+        let content_height = std::cell::Cell::new(0.0);
+        widgets::run_themed_test_ui(|ui| {
+            widgets::panel(ui, geo.inner + 2.0 * widgets::PANEL_PADDING, 2000.0, |ui| {
+                widgets::panel_header(ui, "Hardware input 1", None, None);
+                widgets::device_combo(ui, "in", &mut None, &[], "Choose a microphone…", geo.inner);
+                let mut fine_tune_open = open.get();
+                StripView { index: 0, settings: &mut settings.borrow_mut(), meters: &meters, any_solo: false, fine_tune_open: &mut fine_tune_open, geo, fader_height, apps: &[], apps_empty: super::super::app::APPS_EMPTY_VIRTUAL_IN }.show(ui);
+                open.set(fine_tune_open);
+                content_height.set(ui.min_rect().height());
+            });
+        });
+        content_height.get() + 2.0 * widgets::PANEL_PADDING - fader_height
+    }
+
+    /// Each send-to row (LEDs, the gap, the hint text) must fit the column at the fixed window
+    /// size, or the hint is clipped by the panel edge.
     #[test]
-    fn pan_slider_width_never_drops_below_its_floor() {
-        // Even a column so narrow it goes negative once the fixed "Fine-tune…" row is
-        // subtracted must not hand the slider a negative or zero width.
-        for inner in [-100.0, 0.0, 40.0, 100.0, PAN_ROW_FIXED, PAN_ROW_FIXED + 39.0, 1000.0] {
-            let w = pan_slider_width(inner);
-            assert!(w >= 40.0, "pan slider width {w} fell below its floor for inner={inner}");
+    fn send_to_rows_with_their_hints_fit_the_column() {
+        let geo = Geometry::for_column(widgets::column_width(widgets::WINDOW_SIZE.x - 2.0 * widgets::SECTION_GAP, crate::NUM_BUSES));
+        let routing = std::cell::Cell::new([false; NUM_BUSES]);
+        let width = std::cell::Cell::new(0.0);
+        widgets::run_themed_test_ui(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(geo.inner);
+                let mut r = routing.get();
+                routing_rows(ui, &mut r, 0, geo);
+                routing.set(r);
+                width.set(ui.min_rect().width());
+            });
+        });
+        assert!(width.get() <= geo.inner + 1e-3, "send-to rows are {} px wide in a {} px column", width.get(), geo.inner);
+    }
+
+    /// `PlayerPanel::show` gives `routing_rows` only `geo.left` (the pad grid's width), not the
+    /// full column, since the fader and meter take the rest beside it. The send-to rows with
+    /// their hints must fit there too, or the hint is clipped by the floating window's edge.
+    #[test]
+    fn send_to_rows_fit_the_player_windows_left_column() {
+        let geo = Geometry::for_column(widgets::PLAYER_WINDOW_WIDTH + 2.0 * widgets::PANEL_PADDING);
+        let routing = std::cell::Cell::new([false; NUM_BUSES]);
+        let width = std::cell::Cell::new(0.0);
+        widgets::run_themed_test_ui(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(geo.left);
+                let mut r = routing.get();
+                routing_rows(ui, &mut r, 0, geo);
+                routing.set(r);
+                width.set(ui.min_rect().width());
+            });
+        });
+        assert!(width.get() <= geo.left + 1e-3, "send-to rows are {} px wide in the Player window's {} px left column", width.get(), geo.left);
+    }
+
+    /// `INPUT_FIXED_HEIGHT` is what `App` subtracts from the row to size the fader; if the strip
+    /// renders taller than that, the fader's value readout is clipped by the panel.
+    #[test]
+    fn input_fixed_height_matches_the_rendered_strip() {
+        let measured = rendered_fixed_height(widgets::FADER_MIN_HEIGHT);
+        assert!(
+            (measured - widgets::INPUT_FIXED_HEIGHT).abs() < 1.0,
+            "the strip renders {measured} px beyond its fader; set INPUT_FIXED_HEIGHT to that"
+        );
+        assert!((rendered_fixed_height(200.0) - measured).abs() < 1e-3, "the fixed part does not depend on the fader height");
+    }
+
+    #[test]
+    fn pad_dead_zone_keeps_echo_off_and_round_trips_above_it() {
+        assert_eq!(pad_y_to_echo(0.0), 0.0);
+        assert_eq!(pad_y_to_echo(ECHO_DEAD_ZONE * 0.9), 0.0, "a nudge inside the dead zone adds no echo");
+        assert_eq!(pad_y_to_echo(ECHO_DEAD_ZONE), 0.0, "the line itself is still dry");
+        assert!((pad_y_to_echo(1.0) - 1.0).abs() < 1e-6);
+        assert_eq!(echo_to_pad_y(0.0), 0.0, "dry sits at the bottom, not on the line");
+        for amount in [0.1, 0.5, 1.0] {
+            assert!((pad_y_to_echo(echo_to_pad_y(amount)) - amount).abs() < 1e-6, "amount {amount} round-trips through the pad");
         }
-        // Above the floor, it tracks the available width exactly.
-        assert_eq!(pan_slider_width(PAN_ROW_FIXED + 100.0), 100.0);
+        let mut echo = EchoSettings::default();
+        set_echo_amount(&mut echo, pad_y_to_echo(0.2));
+        assert!(!echo.enabled, "a dot low on the pad leaves the echo off");
     }
 
     #[test]

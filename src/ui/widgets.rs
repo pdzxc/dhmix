@@ -20,8 +20,19 @@ pub const METER_SEGMENTS: usize = 30;
 pub const FADER_MIN_HEIGHT: f32 = 110.0;
 pub const FADER_MAX_HEIGHT: f32 = 420.0;
 pub const KNOB_SIZE: f32 = 36.0;
-/// Buttons stacked beside a fader never grow past this, so the meter gets the spare width.
-pub const SIDE_BUTTON_MAX_WIDTH: f32 = 96.0;
+/// Buttons stacked beside a fader never grow past this; the app list gets the spare width.
+pub const SIDE_BUTTON_MAX_WIDTH: f32 = 64.0;
+/// Gap between neighbouring columns in a row.
+pub const COLUMN_GAP: f32 = 12.0;
+/// The vertical rule between the hardware and virtual groups; a column gap sits on each side.
+pub const GROUP_DIVIDER_WIDTH: f32 = 1.0;
+/// Most app names shown under a virtual input or output before "+n more".
+pub const APP_LIST_ROWS: usize = 5;
+/// Below this the app list is not drawn at all and the buttons take the row.
+pub const MIN_APP_LIST_WIDTH: f32 = 48.0;
+/// Subtracted from rows that would otherwise end exactly on the panel edge, so pixel rounding of
+/// fractional column widths cannot clip the last control.
+pub const ROUNDING_SLACK: f32 = 1.0;
 /// The "DH" badge in front of the DHMIX wordmark, and the size of its lettering.
 pub const LOGO_SIZE: Vec2 = Vec2::new(30.0, 22.0);
 pub const LOGO_FONT_SIZE: f32 = 12.0;
@@ -62,9 +73,8 @@ const MIN_COLUMN_FOR_ROUTES: f32 = max_bus_group_count() as f32 * MIN_LED_ROUTE_
     + FADER_WIDTH
     + METER_WIDTH
     + 2.0 * PANEL_PADDING;
-/// Narrowest column that still fits a bus row: knobs, fader, meter and a legible button column.
-const MIN_COLUMN_FOR_BUS: f32 =
-    KNOB_WIDTH + FADER_WIDTH + METER_WIDTH + 3.0 * ITEM_SPACING + 2.0 * MIN_SIDE_BUTTON_WIDTH + 2.0 * PANEL_PADDING;
+/// Narrowest column that still fits a bus row: the two-knob column, fader and meter.
+const MIN_COLUMN_FOR_BUS: f32 = 2.0 * KNOB_WIDTH + ITEM_SPACING + FADER_WIDTH + METER_WIDTH + 3.0 * ITEM_SPACING + 2.0 * PANEL_PADDING;
 /// Narrowest column: whichever row needs more.
 pub const MIN_COLUMN_WIDTH: f32 = if MIN_COLUMN_FOR_ROUTES > MIN_COLUMN_FOR_BUS { MIN_COLUMN_FOR_ROUTES } else { MIN_COLUMN_FOR_BUS };
 /// Height of an input column beyond its fader, measured from the rendered panel at a known
@@ -112,14 +122,16 @@ pub struct Geometry {
     pub fx_led: Vec2,
     /// One button in the two columns beside a strip's fader (routes; mono / solo / mute).
     pub side_button: Vec2,
-    /// Meter width beside a strip's fader, whatever the two button columns leave.
-    pub strip_meter: f32,
+    /// Width of the app list beside a strip's fader, whatever the button columns leave.
+    pub strip_apps: f32,
+    /// Width of a bus's left column: two knobs, and LIMIT / MUTE beneath them.
+    pub bus_left: f32,
     /// The FINE-TUNE opener, the same size wherever a strip is drawn.
     pub fine_tune_button: Vec2,
-    /// One button in the column beside a bus's fader (limit, mute).
+    /// One of the two buttons beneath a bus's tone knobs.
     pub bus_button: Vec2,
-    /// Meter width beside a bus's fader, whatever the knobs and buttons leave.
-    pub bus_meter: f32,
+    /// Width of the app list beside a bus's fader, whatever the knobs and fader leave.
+    pub bus_apps: f32,
     /// One soundboard pad in a three-column grid that spans `left`.
     pub pad: Vec2,
 }
@@ -130,12 +142,20 @@ impl Geometry {
         // legible size and the panel clips them at its edge instead of shrinking them to nothing.
         let inner = width.max(MIN_COLUMN_WIDTH) - 2.0 * PANEL_PADDING;
         let left = inner - FADER_WIDTH - METER_WIDTH - ITEM_SPACING;
-        // Strip bottom block: fader, meter, then two button columns; the meter takes the rest.
-        let side_w = ((inner - FADER_WIDTH - METER_WIDTH - 3.0 * ITEM_SPACING) / 2.0).min(SIDE_BUTTON_MAX_WIDTH);
-        let strip_meter = inner - FADER_WIDTH - 2.0 * side_w - 3.0 * ITEM_SPACING;
-        // Bus: knob column, fader, wide meter, one button column.
-        let bus_button_w = ((inner - KNOB_WIDTH - FADER_WIDTH - METER_WIDTH - 3.0 * ITEM_SPACING) / 2.0).min(SIDE_BUTTON_MAX_WIDTH);
-        let bus_meter = inner - KNOB_WIDTH - FADER_WIDTH - bus_button_w - 3.0 * ITEM_SPACING;
+        // Strip bottom block: fader, meter, two button columns, then the app list takes the rest.
+        // With the list there are four gaps, without it three; a list narrower than
+        // MIN_APP_LIST_WIDTH is dropped and the buttons widen instead.
+        let capped = ((inner - FADER_WIDTH - METER_WIDTH - 3.0 * ITEM_SPACING) / 2.0).min(SIDE_BUTTON_MAX_WIDTH);
+        let apps_if_capped = inner - FADER_WIDTH - METER_WIDTH - 2.0 * capped - 4.0 * ITEM_SPACING;
+        let (side_w, strip_apps) = if apps_if_capped >= MIN_APP_LIST_WIDTH {
+            (capped, apps_if_capped)
+        } else {
+            (((inner - FADER_WIDTH - METER_WIDTH - 3.0 * ITEM_SPACING) / 2.0).clamp(MIN_SIDE_BUTTON_WIDTH, SIDE_BUTTON_MAX_WIDTH), 0.0)
+        };
+        // Bus: knobs and buttons on the left, fader and meter, then the app list takes the rest.
+        let bus_left = 2.0 * KNOB_WIDTH + ITEM_SPACING;
+        let bus_apps = inner - bus_left - FADER_WIDTH - METER_WIDTH - 3.0 * ITEM_SPACING;
+        let bus_apps = if bus_apps >= MIN_APP_LIST_WIDTH { bus_apps } else { 0.0 };
         Self {
             inner,
             left,
@@ -144,12 +164,14 @@ impl Geometry {
             led_triple: Vec2::new((left - 2.0 * ITEM_SPACING) / 3.0, LED_HEIGHT),
             led_pair: Vec2::new((left - ITEM_SPACING) / 2.0, LED_HEIGHT),
             xy_pad: Vec2::new(inner, XY_PAD_HEIGHT),
-            fx_led: Vec2::new((inner - 2.0 * KNOB_WIDTH - 3.0 * ITEM_SPACING) / 2.0, LED_HEIGHT),
+            // One pixel short so rounding never pushes the right-hand LED past the panel edge.
+            fx_led: Vec2::new((inner - 2.0 * KNOB_WIDTH - 3.0 * ITEM_SPACING - ROUNDING_SLACK) / 2.0, LED_HEIGHT),
             side_button: Vec2::new(side_w, LED_HEIGHT),
             fine_tune_button: Vec2::new(side_w, LED_HEIGHT),
-            strip_meter,
-            bus_button: Vec2::new(bus_button_w, LED_HEIGHT),
-            bus_meter,
+            strip_apps,
+            bus_left,
+            bus_button: Vec2::new((bus_left - ITEM_SPACING) / 2.0, LED_HEIGHT),
+            bus_apps,
             pad: Vec2::new((left - 2.0 * PAD_SPACING) / 3.0, PAD_HEIGHT),
         }
     }
@@ -167,10 +189,46 @@ fn route_button_width(available: f32, count: usize) -> f32 {
     (available - count.saturating_sub(1) as f32 * ITEM_SPACING) / count.max(1) as f32
 }
 
-/// Width of each of `count` equal columns across `available`, leaving one spacing spare so the
-/// last column never touches the window edge.
+/// Width of each of `count` equal columns across `available`: COLUMN_GAP between columns, room
+/// for the group divider, and one spacing spare so the last column never touches the window edge.
 pub fn column_width(available: f32, count: usize) -> f32 {
-    (available - count as f32 * ITEM_SPACING) / count as f32
+    let gaps = (count as f32 - 1.0) * COLUMN_GAP + COLUMN_GAP + GROUP_DIVIDER_WIDTH + ITEM_SPACING;
+    (available - gaps) / count as f32
+}
+
+/// A row of columns with COLUMN_GAP between them.
+pub fn column_row(ui: &mut Ui, add: impl FnOnce(&mut Ui)) {
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = COLUMN_GAP;
+        add(ui);
+    });
+}
+
+/// The vertical rule between the hardware and virtual groups of a row.
+pub fn group_divider(ui: &mut Ui, height: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(GROUP_DIVIDER_WIDTH, height), Sense::hover());
+    ui.painter().line_segment([rect.center_top(), rect.center_bottom()], Stroke::new(GROUP_DIVIDER_WIDTH, COLOR_STRIP_STROKE));
+}
+
+/// The apps currently on a virtual input or output, listed by name beside its fader. Draws
+/// nothing (and takes no gap) when the column has no room for it.
+pub fn app_list(ui: &mut Ui, width: f32, names: &[String], empty: &str) {
+    if width < MIN_APP_LIST_WIDTH {
+        return;
+    }
+    ui.vertical(|ui| {
+        ui.set_width(width);
+        caption(ui, "Apps");
+        if names.is_empty() {
+            hint(ui, empty);
+        }
+        for name in names.iter().take(APP_LIST_ROWS) {
+            ui.label(egui::RichText::new(shorten(name, 14)).small());
+        }
+        if names.len() > APP_LIST_ROWS {
+            hint(ui, format!("+{} more", names.len() - APP_LIST_ROWS));
+        }
+    });
 }
 
 /// What one column hands its panel each frame.
@@ -661,6 +719,19 @@ mod tests {
         assert_eq!(segment_color(1.0), COLOR_CLIP);
     }
 
+    /// Fader, meter, two button columns and (when present) the app list add up to the width.
+    fn strip_bottom_fills(g: &Geometry) -> bool {
+        let gaps = if g.strip_apps > 0.0 { 4.0 } else { 3.0 };
+        (FADER_WIDTH + METER_WIDTH + 2.0 * g.side_button.x + g.strip_apps + gaps * ITEM_SPACING - g.inner).abs() < 1e-3
+            || (g.strip_apps == 0.0 && FADER_WIDTH + METER_WIDTH + 2.0 * g.side_button.x + 3.0 * ITEM_SPACING <= g.inner + 1e-3)
+    }
+
+    fn bus_row_fills(g: &Geometry) -> bool {
+        let gaps = if g.bus_apps > 0.0 { 3.0 } else { 2.0 };
+        (g.bus_left + FADER_WIDTH + METER_WIDTH + g.bus_apps + gaps * ITEM_SPACING - g.inner).abs() < 1e-3
+            || (g.bus_apps == 0.0 && g.bus_left + FADER_WIDTH + METER_WIDTH + 2.0 * ITEM_SPACING <= g.inner + 1e-3)
+    }
+
     #[test]
     fn geometry_fills_its_column_exactly() {
         let g = Geometry::for_column(230.0);
@@ -668,10 +739,10 @@ mod tests {
         assert!((crate::NUM_HW_BUSES as f32 * g.led_route_hardware.x + (crate::NUM_HW_BUSES - 1) as f32 * ITEM_SPACING - g.left).abs() < 1e-4);
         assert!((crate::NUM_VIRT_BUSES as f32 * g.led_route_virtual.x + (crate::NUM_VIRT_BUSES - 1) as f32 * ITEM_SPACING - g.left).abs() < 1e-4);
         assert_eq!(g.xy_pad.x, g.inner, "the colour pad spans the column");
-        assert!((2.0 * KNOB_WIDTH + 2.0 * g.fx_led.x + 3.0 * ITEM_SPACING - g.inner).abs() < 1e-4);
-        assert!((FADER_WIDTH + g.strip_meter + 2.0 * g.side_button.x + 3.0 * ITEM_SPACING - g.inner).abs() < 1e-4);
-        assert!((KNOB_WIDTH + FADER_WIDTH + g.bus_meter + g.bus_button.x + 3.0 * ITEM_SPACING - g.inner).abs() < 1e-4);
-        assert!(g.strip_meter >= METER_WIDTH && g.bus_meter >= METER_WIDTH);
+        assert!((2.0 * KNOB_WIDTH + 2.0 * g.fx_led.x + 3.0 * ITEM_SPACING + ROUNDING_SLACK - g.inner).abs() < 1e-4);
+        assert!(strip_bottom_fills(&g), "strip bottom row must fill the column");
+        assert!(bus_row_fills(&g), "bus row must fill the column");
+        assert!((2.0 * g.bus_button.x + ITEM_SPACING - g.bus_left).abs() < 1e-4);
         assert!((3.0 * g.pad.x + 2.0 * PAD_SPACING - g.left).abs() < 1e-4);
     }
 
@@ -705,13 +776,27 @@ mod tests {
     #[test]
     fn columns_share_the_width_with_gaps_between() {
         let w = column_width(1000.0, 7);
-        assert!((7.0 * w + 7.0 * ITEM_SPACING - 1000.0).abs() < 1e-4);
+        let used = 7.0 * w + 6.0 * COLUMN_GAP + COLUMN_GAP + GROUP_DIVIDER_WIDTH + ITEM_SPACING;
+        assert!((used - 1000.0).abs() < 1e-4);
     }
 
     #[test]
     fn column_width_for_a_single_column_leaves_one_spacing_spare() {
         let w = column_width(500.0, 1);
-        assert_eq!(w, 500.0 - ITEM_SPACING);
+        assert_eq!(w, 500.0 - COLUMN_GAP - GROUP_DIVIDER_WIDTH - ITEM_SPACING);
+    }
+
+    /// Five columns is the Player row's own count of buses/strips grouping; the gap budget
+    /// (one COLUMN_GAP per pair of columns, plus one more, the divider and the spare spacing)
+    /// must exactly equal available minus the width handed to every column.
+    #[test]
+    fn column_width_budget_for_five_columns_equals_available_minus_gaps() {
+        let available = 900.0;
+        let w = column_width(available, 5);
+        let gap_budget = 4.0 * COLUMN_GAP + COLUMN_GAP + GROUP_DIVIDER_WIDTH + ITEM_SPACING;
+        assert_eq!(w, (available - gap_budget) / 5.0);
+        let used = 5.0 * w + gap_budget;
+        assert!((used - available).abs() < 1e-4);
     }
 
     #[test]
@@ -751,8 +836,31 @@ mod tests {
         let g = Geometry::for_column(MIN_COLUMN_WIDTH);
         assert!(g.side_button.x >= 40.0, "side_button.x too narrow: {}", g.side_button.x);
         assert!(g.bus_button.x >= 40.0, "bus_button.x too narrow: {}", g.bus_button.x);
-        assert!(g.strip_meter >= METER_WIDTH, "strip_meter too narrow: {}", g.strip_meter);
-        assert!(g.bus_meter >= METER_WIDTH, "bus_meter too narrow: {}", g.bus_meter);
+        assert!(strip_bottom_fills(&g) && bus_row_fills(&g));
+        let wide = Geometry::for_column(320.0);
+        assert!(wide.strip_apps >= MIN_APP_LIST_WIDTH && wide.bus_apps >= MIN_APP_LIST_WIDTH, "wide columns show the app list");
+    }
+
+    /// `strip_apps` and `bus_apps` are dropped-or-shown, never a size in between: as the column
+    /// widens from the minimum, each field must read exactly 0.0 until it clears
+    /// MIN_APP_LIST_WIDTH, then never fall back below it.
+    #[test]
+    fn app_list_width_is_never_between_zero_and_the_minimum() {
+        let mut column = MIN_COLUMN_WIDTH;
+        while column <= MIN_COLUMN_WIDTH + 400.0 {
+            let g = Geometry::for_column(column);
+            assert!(
+                g.strip_apps == 0.0 || g.strip_apps >= MIN_APP_LIST_WIDTH,
+                "strip_apps landed between zero and the minimum at column {column}: {}",
+                g.strip_apps
+            );
+            assert!(
+                g.bus_apps == 0.0 || g.bus_apps >= MIN_APP_LIST_WIDTH,
+                "bus_apps landed between zero and the minimum at column {column}: {}",
+                g.bus_apps
+            );
+            column += 1.0;
+        }
     }
 
     /// A very wide window must not let the side buttons balloon past their cap; the meter should

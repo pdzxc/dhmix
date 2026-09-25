@@ -101,8 +101,12 @@ pub struct StripView<'a> {
     /// Whether this strip's fine-tune window is open.
     pub fine_tune_open: &'a mut bool,
     pub geo: Geometry,
-    /// Fader height for this frame; the app stretches it to fill the row.
+    /// Fader height for this frame, derived from the row height.
     pub fader_height: f32,
+    /// Apps playing into this input's cable (virtual inputs only).
+    pub apps: &'a [String],
+    /// What the app list says when it is empty.
+    pub apps_empty: &'a str,
 }
 
 impl StripView<'_> {
@@ -123,7 +127,7 @@ impl StripView<'_> {
                     ui.set_opacity(0.45);
                 }
                 widgets::fader(ui, &mut self.settings.gain_db, self.fader_height);
-                widgets::meter(ui, self.meters.strips[self.index].load(), self.fader_height, geo.strip_meter);
+                widgets::meter(ui, self.meters.strips[self.index].load(), self.fader_height, widgets::METER_WIDTH);
             });
             ui.vertical(|ui| {
                 ui.set_width(geo.side_button.x);
@@ -133,6 +137,7 @@ impl StripView<'_> {
                 ui.set_width(geo.side_button.x);
                 state_column(ui, self.settings, geo, self.fine_tune_open);
             });
+            widgets::app_list(ui, geo.strip_apps, self.apps, self.apps_empty);
         });
         self.fine_tune_window(ui.ctx());
     }

@@ -7,16 +7,10 @@ use crate::audio::devices::cable_partner;
 use crate::audio::IoSettings;
 use crate::{bus_name, strip_name, PLAYER_STRIP};
 use std::borrow::Cow;
-use std::time::{Duration, Instant};
-
-const REFRESH_EVERY: Duration = Duration::from_secs(3);
 
 #[derive(Default)]
 pub struct AppsPanel {
     pub open: bool,
-    sessions: Vec<AppSession>,
-    endpoints: Vec<Endpoint>,
-    last_refresh: Option<Instant>,
     error: Option<String>,
 }
 
@@ -49,27 +43,18 @@ fn endpoint_label(endpoint: &Endpoint, io: &IoSettings) -> String {
 }
 
 impl AppsPanel {
-    pub fn refresh(&mut self) {
-        (self.sessions, self.endpoints) = apps::snapshot();
-        self.last_refresh = Some(Instant::now());
-    }
-
-    fn refresh_if_stale(&mut self) {
-        if self.last_refresh.is_none_or(|t| t.elapsed() > REFRESH_EVERY) {
-            self.refresh();
-        }
-    }
-
-    pub fn show(&mut self, ctx: &egui::Context, io: &IoSettings) {
+    /// Draws the window. Returns true when the user moved an app, so the caller refreshes its
+    /// snapshot right away instead of waiting for the next timer tick.
+    pub fn show(&mut self, ctx: &egui::Context, io: &IoSettings, sessions: &[AppSession], endpoints: &[Endpoint]) -> bool {
         if !self.open {
-            return;
+            return false;
         }
-        self.refresh_if_stale();
+        let mut moved = false;
         let mut open = self.open;
         egui::Window::new("Applications").open(&mut open).resizable(false).collapsible(false).show(ctx, |ui| {
             if !apps::supported() {
                 widgets::hint(ui, "Per-app routing works on Windows only. On this system the list is empty.");
-            } else if self.sessions.is_empty() {
+            } else if sessions.is_empty() {
                 widgets::hint(ui, "No application is playing or recording audio right now.");
             }
             let mut change: Option<(u32, Flow, Option<String>)> = None;
@@ -80,7 +65,7 @@ impl AppsPanel {
                 widgets::caption(ui, "Device now");
                 widgets::caption(ui, "Send to");
                 ui.end_row();
-                for session in &self.sessions {
+                for session in sessions {
                     widgets::value_label(ui, &session.name);
                     let (verb, color) = match session.flow {
                         Flow::Playback => ("plays", COLOR_ACTIVE),
@@ -90,8 +75,7 @@ impl AppsPanel {
                     let position = mixer_position(&session.device_name, session.flow, io).unwrap_or_else(|| "not in the mixer".into());
                     ui.label(format!("{} · {}", widgets::shorten(&session.device_name, 22), position));
                     let default = std::iter::once((Cow::Borrowed("Windows default"), None, false));
-                    let endpoints = self
-                        .endpoints
+                    let endpoints = endpoints
                         .iter()
                         .filter(|e| e.flow == session.flow)
                         .map(|e| (Cow::Owned(endpoint_label(e, io)), Some(e.id.as_str()), e.name == session.device_name));
@@ -106,7 +90,7 @@ impl AppsPanel {
                 match apps::set_app_device(pid, flow, endpoint.as_deref()) {
                     Ok(()) => {
                         self.error = None;
-                        self.refresh();
+                        moved = true;
                     }
                     Err(e) => self.error = Some(format!("{e:#}")),
                 }
@@ -117,7 +101,28 @@ impl AppsPanel {
             widgets::hint(ui, "Moving an app takes effect the next time it starts a sound. Windows remembers it per app.");
         });
         self.open = open;
+        moved
     }
+}
+
+/// Names of the apps playing into the cable whose capture side is `strip_device`.
+pub fn apps_feeding(sessions: &[AppSession], strip_device: Option<&str>) -> Vec<String> {
+    let Some(device) = strip_device else { return Vec::new() };
+    sessions
+        .iter()
+        .filter(|s| s.flow == Flow::Playback && cable_partner(&s.device_name).as_deref() == Some(device))
+        .map(|s| s.name.clone())
+        .collect()
+}
+
+/// Names of the apps recording from the cable whose playback side is `bus_device`.
+pub fn apps_hearing(sessions: &[AppSession], bus_device: Option<&str>) -> Vec<String> {
+    let Some(device) = bus_device else { return Vec::new() };
+    sessions
+        .iter()
+        .filter(|s| s.flow == Flow::Capture && cable_partner(&s.device_name).as_deref() == Some(device))
+        .map(|s| s.name.clone())
+        .collect()
 }
 
 #[cfg(test)]
@@ -131,6 +136,20 @@ mod tests {
         io.bus_outputs[0] = Some("Speakers (Realtek)".into());
         io.bus_outputs[NUM_HW_BUSES] = Some("CABLE-A Input (VB-Audio Cable A)".into());
         io
+    }
+
+    #[test]
+    fn apps_feeding_and_hearing_match_through_the_cable() {
+        let sessions = vec![
+            AppSession { pid: 1, name: "Game".into(), flow: Flow::Playback, device_name: "CABLE Input (VB-Audio Virtual Cable)".into() },
+            AppSession { pid: 2, name: "Spotify".into(), flow: Flow::Playback, device_name: "Speakers (Realtek)".into() },
+            AppSession { pid: 3, name: "OBS".into(), flow: Flow::Capture, device_name: "CABLE-A Output (VB-Audio Cable A)".into() },
+        ];
+        assert_eq!(apps_feeding(&sessions, Some("CABLE Output (VB-Audio Virtual Cable)")), vec!["Game".to_string()]);
+        assert!(apps_feeding(&sessions, Some("Speakers (Realtek)")).is_empty());
+        assert!(apps_feeding(&sessions, None).is_empty());
+        assert_eq!(apps_hearing(&sessions, Some("CABLE-A Input (VB-Audio Cable A)")), vec!["OBS".to_string()]);
+        assert!(apps_hearing(&sessions, Some("CABLE Input (VB-Audio Virtual Cable)")).is_empty());
     }
 
     #[test]
@@ -181,7 +200,31 @@ mod render_tests {
         let mut panel = AppsPanel { open: true, ..Default::default() };
         let io = IoSettings::empty();
         for _ in 0..3 {
-            let _ = ctx.run(egui::RawInput::default(), |ctx| panel.show(ctx, &io));
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                panel.show(ctx, &io, &[], &[]);
+            });
+        }
+    }
+
+    /// Same, but with sessions and endpoints populated so the grid actually draws rows and the
+    /// device picker has choices; this is the path with the most content to lay out.
+    #[test]
+    fn applications_window_with_sessions_and_endpoints_renders_without_panicking() {
+        let ctx = egui::Context::default();
+        let mut panel = AppsPanel { open: true, ..Default::default() };
+        let io = IoSettings::empty();
+        let sessions = vec![
+            AppSession { pid: 1, name: "Game".into(), flow: Flow::Playback, device_name: "Speakers (Realtek)".into() },
+            AppSession { pid: 2, name: "Discord".into(), flow: Flow::Capture, device_name: "Microphone (Realtek)".into() },
+        ];
+        let endpoints = vec![
+            Endpoint { id: "spk".into(), name: "Speakers (Realtek)".into(), flow: Flow::Playback },
+            Endpoint { id: "mic".into(), name: "Microphone (Realtek)".into(), flow: Flow::Capture },
+        ];
+        for _ in 0..3 {
+            let _ = ctx.run(egui::RawInput::default(), |ctx| {
+                panel.show(ctx, &io, &sessions, &endpoints);
+            });
         }
     }
 }

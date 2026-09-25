@@ -1,6 +1,8 @@
 //! Top-level eframe app: owns the audio I/O, the engine thread and the panels.
 
-use super::apps_panel::AppsPanel;
+use super::apps_panel::{apps_feeding, apps_hearing, AppsPanel};
+use crate::apps::{AppSession, Endpoint};
+use std::time::Instant;
 use super::bus_panel::BusView;
 use super::help_panel::HelpPanel;
 use super::player_panel::PlayerPanel;
@@ -21,6 +23,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 const STORAGE_KEY: &str = "streammix.preset";
+const APPS_REFRESH_EVERY: std::time::Duration = std::time::Duration::from_secs(3);
+const APPS_EMPTY_VIRTUAL_IN: &str = "None yet";
+const APPS_EMPTY_VIRTUAL_OUT: &str = "None yet";
+const APPS_EMPTY_HARDWARE_IN: &str = "Physical";
+const APPS_EMPTY_HARDWARE_OUT: &str = "Physical";
 /// Set once the guide has been shown, so it only opens by itself on the very first launch.
 const HELP_SEEN_KEY: &str = "streammix.help_seen";
 const PRESET_FILTER: [&str; 1] = ["json"];
@@ -120,6 +127,10 @@ pub struct App {
     hotkey_error: Option<String>,
     status: String,
     apps: AppsPanel,
+    /// Apps with audio sessions and the endpoints they can move to, refreshed on a timer.
+    app_sessions: Vec<AppSession>,
+    app_endpoints: Vec<Endpoint>,
+    apps_refreshed: Option<Instant>,
     help: HelpPanel,
     /// The Player lives in its own floating window so inputs and outputs share one column grid.
     player_open: bool,
@@ -181,11 +192,23 @@ impl App {
             hotkey_error,
             status: String::new(),
             apps: AppsPanel::default(),
+            app_sessions: Vec::new(),
+            app_endpoints: Vec::new(),
+            apps_refreshed: None,
             help: HelpPanel { open: !help_seen },
             player_open: false,
             fine_tune_open: [false; NUM_STRIPS],
             workspace: Workspace::Mixer,
             _engine: engine,
+        }
+    }
+
+    /// Re-reads which apps play or record, at most every few seconds. This runs whether or not
+    /// the Applications window is open, because every virtual strip and bus lists its apps.
+    fn refresh_apps_if_stale(&mut self) {
+        if self.apps_refreshed.is_none_or(|t| t.elapsed() > APPS_REFRESH_EVERY) {
+            (self.app_sessions, self.app_endpoints) = crate::apps::snapshot();
+            self.apps_refreshed = Some(Instant::now());
         }
     }
 
@@ -452,11 +475,13 @@ impl App {
         self.device_row(ui, "More outputs", more_outputs);
     }
 
-    /// One captioned row of device cards on the mixer's column grid.
+    /// One captioned row of device cards on the mixer's column grid. It borrows the mixer's
+    /// column width (which budgets for the group divider) so the cards line up with the strips,
+    /// even though this row draws no divider.
     fn device_row(&mut self, ui: &mut Ui, caption: &str, cards: Vec<DeviceCard<'_>>) {
         widgets::section(ui, caption);
         let width = widgets::column_width(ui.available_width(), mixer_columns());
-        ui.horizontal_top(|ui| {
+        widgets::column_row(ui, |ui| {
             for card in cards {
                 self.device_card(ui, card, width);
             }
@@ -469,8 +494,16 @@ impl App {
         let width = widgets::column_width(ui.available_width(), mixer_columns());
         let geo = Geometry::for_column(width);
         let fader_height = widgets::fader_height_in(row_height, widgets::INPUT_FIXED_HEIGHT);
-        ui.horizontal_top(|ui| {
+        widgets::column_row(ui, |ui| {
             for i in 0..PLAYER_STRIP {
+                if i == NUM_HW_STRIPS {
+                    widgets::group_divider(ui, row_height);
+                }
+                let (apps, apps_empty) = if i < NUM_HW_STRIPS {
+                    (Vec::new(), APPS_EMPTY_HARDWARE_IN)
+                } else {
+                    (apps_feeding(&self.app_sessions, self.io.settings.strip_inputs[i].as_deref()), APPS_EMPTY_VIRTUAL_IN)
+                };
                 widgets::panel(ui, width, row_height, |ui| {
                     let mut settings = self.settings.lock();
                     let any_solo = settings.any_solo();
@@ -503,6 +536,8 @@ impl App {
                         fine_tune_open: &mut self.fine_tune_open[i],
                         geo,
                         fader_height,
+                        apps: &apps,
+                        apps_empty,
                     }
                     .show(ui);
                 });
@@ -514,8 +549,16 @@ impl App {
         let width = widgets::column_width(ui.available_width(), mixer_columns());
         let geo = Geometry::for_column(width);
         let fader_height = widgets::fader_height_in(row_height, widgets::OUTPUT_FIXED_HEIGHT);
-        ui.horizontal_top(|ui| {
+        widgets::column_row(ui, |ui| {
             for b in 0..NUM_BUSES {
+                if b == NUM_HW_BUSES {
+                    widgets::group_divider(ui, row_height);
+                }
+                let (apps, apps_empty) = if b < NUM_HW_BUSES {
+                    (Vec::new(), APPS_EMPTY_HARDWARE_OUT)
+                } else {
+                    (apps_hearing(&self.app_sessions, self.io.settings.bus_outputs[b].as_deref()), APPS_EMPTY_VIRTUAL_OUT)
+                };
                 widgets::panel(ui, width, row_height, |ui| {
                     let mut settings = self.settings.lock();
                     let hardware = b < NUM_HW_BUSES;
@@ -533,7 +576,7 @@ impl App {
                     if widgets::device_combo(ui, ("out", b), &mut selected, &self.devices.outputs, empty, geo.inner) {
                         self.io.set_bus_output(b, selected);
                     }
-                    BusView { index: b, settings: &mut settings.buses[b], meters: &self.meters, geo, fader_height }.show(ui);
+                    BusView { index: b, settings: &mut settings.buses[b], meters: &self.meters, geo, fader_height, apps: &apps, apps_empty }.show(ui);
                 });
             }
         });
@@ -584,6 +627,7 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_hotkeys();
+        self.refresh_apps_if_stale();
         egui::TopBottomPanel::top("top").show(ctx, |ui| self.top_bar(ui));
         egui::CentralPanel::default().frame(egui::Frame::default().fill(widgets::COLOR_BG).inner_margin(egui::Margin::same(widgets::SECTION_GAP))).show(ctx, |ui| {
             match self.workspace {
@@ -606,7 +650,9 @@ impl eframe::App for App {
                 }
             }
         });
-        self.apps.show(ctx, &self.io.settings);
+        if self.apps.show(ctx, &self.io.settings, &self.app_sessions, &self.app_endpoints) {
+            self.apps_refreshed = None;
+        }
         self.player_window(ctx);
         self.help.show(ctx);
         ctx.request_repaint_after(Duration::from_millis(33));

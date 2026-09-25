@@ -1,7 +1,8 @@
 //! Top-level eframe app: owns the audio I/O, the engine thread and the panels.
 
 use super::apps_panel::{apps_feeding, apps_hearing, AppsPanel};
-use crate::apps::{AppSession, Endpoint};
+use crate::apps::{self, AppSession, Endpoint, Flow};
+use crate::audio::devices::cable_partner;
 use std::time::Instant;
 use super::bus_panel::BusView;
 use super::help_panel::HelpPanel;
@@ -39,6 +40,9 @@ const APPS_EMPTY_HARDWARE_OUT: &str = "Physical";
 /// Set once the guide has been shown, so it only opens by itself on the very first launch.
 const HELP_SEEN_KEY: &str = "streammix.help_seen";
 const PRESET_FILTER: [&str; 1] = ["json"];
+const CABLE_URL: &str = "https://vb-audio.com/Cable/";
+const DEFAULT_OUTPUT_TIP: &str = "Make this cable the Windows default output, so every app plays into this input unless you move it.";
+const DEFAULT_MIC_TIP: &str = "Make this cable the Windows default microphone, so OBS, Discord or a call hear this output.";
 /// A comma-separated list of windows to open at launch (player, applications, help, settings),
 /// for screenshots and testing: `DHMIX_OPEN=player,settings`.
 const OPEN_WINDOWS_ENV: &str = "DHMIX_OPEN";
@@ -305,7 +309,7 @@ impl App {
                 widgets::led(ui, &mut self.help.open, "HELP", widgets::COLOR_ACCENT, widgets::TOP_TOGGLE_SIZE, "What inputs, outputs and the A / B buttons mean");
                 widgets::led(ui, &mut self.apps.open, "APPLICATIONS", widgets::COLOR_ACCENT, widgets::TOP_TOGGLE_SIZE, "Which apps play or record audio, and where to send them");
                 ui.separator();
-                if widgets::button(ui, "SAVE…", widgets::TOP_BUTTON_SIZE, "Save the current mixer setup to a file") {
+                if widgets::button(ui, "SAVE…", widgets::ACTION_BUTTON_SIZE, "Save the current mixer setup to a file") {
                     if let Some(path) = rfd::FileDialog::new().set_file_name("dhmix.json").add_filter("Preset", &PRESET_FILTER).save_file() {
                         self.status = match self.preset().save(&path) {
                             Ok(()) => format!("Saved {}", path.display()),
@@ -313,7 +317,7 @@ impl App {
                         };
                     }
                 }
-                if widgets::button(ui, "LOAD…", widgets::TOP_BUTTON_SIZE, "Load a saved mixer setup") {
+                if widgets::button(ui, "LOAD…", widgets::ACTION_BUTTON_SIZE, "Load a saved mixer setup") {
                     if let Some(path) = rfd::FileDialog::new().add_filter("Preset", &PRESET_FILTER).pick_file() {
                         match Preset::load(&path) {
                             Ok(p) => {
@@ -326,7 +330,7 @@ impl App {
                 }
                 widgets::caption(ui, "PRESET");
                 ui.separator();
-                if widgets::button(ui, "REFRESH", widgets::TOP_BUTTON_SIZE, "Rescan after plugging in a device or installing a cable") {
+                if widgets::button(ui, "REFRESH", widgets::ACTION_BUTTON_SIZE, "Rescan after plugging in a device or installing a cable") {
                     self.refresh_devices();
                 }
                 widgets::caption(ui, "DEVICES");
@@ -349,6 +353,11 @@ impl App {
             match &self.hotkey_error {
                 Some(e) => widgets::error_label(ui, e),
                 None => widgets::hint(ui, Hotkeys::description()),
+            }
+            if self.devices.virtual_inputs().is_empty() {
+                ui.separator();
+                widgets::hint(ui, "No virtual cable found, so apps cannot play into the mixer.");
+                ui.hyperlink_to("Install VB-CABLE", CABLE_URL);
             }
             if !self.status.is_empty() {
                 ui.separator();
@@ -415,9 +424,17 @@ impl App {
                     } else {
                         (&self.virtual_first_inputs, "Choose a cable output…")
                     };
-                    if widgets::device_combo(ui, ("in", i), &mut selected, names, empty, geo.inner) {
-                        self.io.set_strip_input(i, selected);
-                    }
+                    let virtual_strip = i >= NUM_HW_STRIPS;
+                    ui.horizontal(|ui| {
+                        if widgets::device_combo(ui, ("in", i), &mut selected, names, empty, device_combo_width(geo.inner, virtual_strip)) {
+                            self.io.set_strip_input(i, selected.clone());
+                        }
+                        if virtual_strip {
+                            if let Some(message) = default_device_button(ui, Flow::Playback, selected.as_deref(), DEFAULT_OUTPUT_TIP) {
+                                self.status = message;
+                            }
+                        }
+                    });
                     StripView {
                         index: i,
                         settings: &mut settings.strips[i],
@@ -463,14 +480,46 @@ impl App {
                     widgets::panel_header(ui, bus_group_title(b), Some((&bus_name(b), widgets::bus_color(b))), status);
                     let mut selected = self.io.settings.bus_outputs[b].clone();
                     let empty = if hardware { "Choose speakers / headphones…" } else { "Choose a cable input…" };
-                    if widgets::device_combo(ui, ("out", b), &mut selected, &self.devices.outputs, empty, geo.inner) {
-                        self.io.set_bus_output(b, selected);
-                    }
+                    ui.horizontal(|ui| {
+                        if widgets::device_combo(ui, ("out", b), &mut selected, &self.devices.outputs, empty, device_combo_width(geo.inner, !hardware)) {
+                            self.io.set_bus_output(b, selected.clone());
+                        }
+                        if !hardware {
+                            if let Some(message) = default_device_button(ui, Flow::Capture, selected.as_deref(), DEFAULT_MIC_TIP) {
+                                self.status = message;
+                            }
+                        }
+                    });
                     BusView { index: b, settings: &mut settings.buses[b], meters: &self.meters, geo, fader_height, apps: &apps, apps_empty }.show(ui);
                 });
             }
         });
     }
+}
+
+/// A virtual card's device picker leaves room for its Default button on Windows.
+fn device_combo_width(inner: f32, virtual_card: bool) -> f32 {
+    if virtual_card && apps::supported() {
+        inner - widgets::ACTION_BUTTON_SIZE.x - widgets::ITEM_SPACING
+    } else {
+        inner
+    }
+}
+
+/// "DEFAULT": makes the other end of the chosen cable the Windows default device, so every app
+/// plays into this input (playback) or hears this output (capture). Only on Windows, and only
+/// once a cable is chosen. Returns the message for the status line when clicked.
+fn default_device_button(ui: &mut Ui, flow: Flow, selected: Option<&str>, tip: &str) -> Option<String> {
+    if !apps::supported() {
+        return None;
+    }
+    let cable_end = selected.and_then(cable_partner);
+    let clicked = ui.add_enabled_ui(cable_end.is_some(), |ui| widgets::button(ui, "DEFAULT", widgets::ACTION_BUTTON_SIZE, tip)).inner;
+    let name = cable_end.filter(|_| clicked)?;
+    Some(match apps::set_default_device(flow, &name) {
+        Ok(()) => format!("{name} is now the Windows default {}.", if flow == Flow::Playback { "output" } else { "microphone" }),
+        Err(e) => format!("Could not set the Windows default: {e:#}"),
+    })
 }
 
 /// The window names in a `DHMIX_OPEN` value, trimmed and lower-cased.
@@ -606,6 +655,15 @@ mod tests {
         assert_eq!(mixer_columns(), PLAYER_STRIP, "every device input sits above an output");
         assert_eq!(mixer_columns(), NUM_BUSES);
         assert_eq!(strip_title(PLAYER_STRIP), "Player", "the Player keeps its strip settings but lives in a window");
+    }
+
+    /// A hardware card never gives up room for the Default button; a virtual card only does on
+    /// Windows, where the button actually appears.
+    #[test]
+    fn device_combo_width_leaves_room_for_the_default_button_only_on_virtual_windows_cards() {
+        assert_eq!(device_combo_width(300.0, false), 300.0, "hardware cards keep the full width");
+        let expected_virtual = if cfg!(windows) { 300.0 - widgets::ACTION_BUTTON_SIZE.x - widgets::ITEM_SPACING } else { 300.0 };
+        assert_eq!(device_combo_width(300.0, true), expected_virtual);
     }
 
     #[test]

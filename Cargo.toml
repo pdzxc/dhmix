@@ -1,6 +1,6 @@
 [package]
 name = "dhmix"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 build = "build.rs"
 description = "Free, open virtual audio mixer for streaming (Voicemeeter-style): 6 input strips, 3 hardware + 2 virtual buses, per-strip denoiser/gate/EQ/compressor/echo/reverb."

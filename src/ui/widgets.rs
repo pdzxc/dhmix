@@ -64,8 +64,8 @@ pub const RECORD_BUTTON_SIZE: Vec2 = Vec2::new(34.0, LED_HEIGHT);
 pub const RECORD_GLYPH_RADIUS: f32 = 4.0;
 /// Top-bar window toggles (Player, Applications, Help, Settings).
 pub const TOP_TOGGLE_SIZE: Vec2 = Vec2::new(92.0, 22.0);
-/// Top-bar actions: Refresh, Load…, Save….
-pub const TOP_BUTTON_SIZE: Vec2 = Vec2::new(72.0, LED_HEIGHT);
+/// Actions: Refresh, Load…, Save… in the top bar, and Default on the virtual cards.
+pub const ACTION_BUTTON_SIZE: Vec2 = Vec2::new(72.0, LED_HEIGHT);
 /// The Player's transport buttons: Load…, Play / Pause, Stop, Loop.
 pub const TRANSPORT_BUTTON_SIZE: Vec2 = Vec2::new(56.0, LED_HEIGHT);
 /// Outer width of a knob widget.

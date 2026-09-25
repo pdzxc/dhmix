@@ -1,5 +1,6 @@
 //! Endpoint enumeration. On Windows this is WASAPI, so virtual cables (VB-CABLE "CABLE Input" /
-//! "CABLE Output") show up here like any other device.
+//! "CABLE Output") show up here like any other device. A cable renamed in Windows Sound settings
+//! to "DHMIX Input" / "DHMIX Output" is recognised too.
 
 use cpal::traits::{DeviceTrait, HostTrait};
 
@@ -18,7 +19,7 @@ impl DeviceList {
 
 pub fn is_virtual_name(name: &str) -> bool {
     let n = name.to_ascii_lowercase();
-    ["cable", "virtual", "vb-audio", "voicemeeter", "blackhole", "loopback"].iter().any(|k| n.contains(k))
+    ["cable", "virtual", "vb-audio", "voicemeeter", "blackhole", "loopback", "dhmix"].iter().any(|k| n.contains(k))
 }
 
 /// The other end of a virtual cable: VB-CABLE names its playback side "... Input" and its
@@ -62,6 +63,8 @@ mod tests {
     #[test]
     fn virtual_cable_names_are_recognised() {
         assert!(is_virtual_name("CABLE Output (VB-Audio Virtual Cable)"));
+        assert!(is_virtual_name("DHMIX Input"), "a cable renamed after the app still counts");
+        assert_eq!(cable_partner("DHMIX Input").as_deref(), Some("DHMIX Output"));
         assert!(is_virtual_name("Voicemeeter Out B1"));
         assert!(!is_virtual_name("Realtek High Definition Audio"));
     }
@@ -70,6 +73,7 @@ mod tests {
     fn cable_partner_swaps_input_and_output_sides() {
         assert_eq!(cable_partner("CABLE Input (VB-Audio Virtual Cable)").as_deref(), Some("CABLE Output (VB-Audio Virtual Cable)"));
         assert_eq!(cable_partner("CABLE-A Output (VB-Audio Cable A)").as_deref(), Some("CABLE-A Input (VB-Audio Cable A)"));
+        assert_eq!(cable_partner("DHMIX Output").as_deref(), Some("DHMIX Input"));
         assert_eq!(cable_partner("Realtek Speakers"), None);
     }
 

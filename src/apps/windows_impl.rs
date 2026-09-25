@@ -9,11 +9,11 @@
 
 use super::{AppSession, Endpoint, Flow};
 use anyhow::{anyhow, Context, Result};
-use windows::core::{IUnknown, IUnknown_Vtbl, Interface, HRESULT, HSTRING, PWSTR};
+use windows::core::{IUnknown, IUnknown_Vtbl, Interface, GUID, HRESULT, HSTRING, PCWSTR, PWSTR};
 use windows::Win32::Devices::FunctionDiscovery::PKEY_Device_FriendlyName;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, S_OK};
 use windows::Win32::Media::Audio::{
-    eCapture, eConsole, eMultimedia, eRender, EDataFlow, ERole, IAudioSessionControl2, IAudioSessionManager2, IMMDevice, IMMDeviceEnumerator,
+    eCapture, eCommunications, eConsole, eMultimedia, eRender, EDataFlow, ERole, IAudioSessionControl2, IAudioSessionManager2, IMMDevice, IMMDeviceEnumerator,
     MMDeviceEnumerator, DEVICE_STATE_ACTIVE,
 };
 use windows::Win32::System::Com::{CoCreateInstance, CoInitializeEx, CoTaskMemFree, CLSCTX_ALL, COINIT_APARTMENTTHREADED, STGM_READ};
@@ -21,6 +21,11 @@ use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW,
 use windows::Win32::System::WinRT::RoGetActivationFactory;
 
 const POLICY_CLASS: &str = "Windows.Media.Internal.AudioPolicyConfig";
+/// The class behind the Sound control panel's "Set as default". Undocumented but unchanged since
+/// Vista; every tray mixer uses it. Layout from PolicyConfig.h: IUnknown, then GetMixFormat,
+/// GetDeviceFormat, ResetDeviceFormat, SetDeviceFormat, GetProcessingPeriod, SetProcessingPeriod,
+/// GetShareMode, SetShareMode, GetPropertyValue, SetPropertyValue, SetDefaultEndpoint.
+const POLICY_CONFIG_CLASS: GUID = GUID::from_u128(0x870af99c_171d_4f9e_af0d_e63df40c2bc9);
 const MMDEVAPI_TOKEN: &str = r"\\?\SWD#MMDEVAPI#";
 const DEVINTERFACE_AUDIO_RENDER: &str = "#{e6327cad-dcec-4949-ae8a-991e976a79d2}";
 const DEVINTERFACE_AUDIO_CAPTURE: &str = "#{2eef81be-33fa-4800-9670-1cd474972c3f}";
@@ -53,6 +58,21 @@ unsafe trait IAudioPolicyConfigFactory: IUnknown {
     unsafe fn SetPersistedDefaultAudioEndpoint(&self, process_id: u32, flow: EDataFlow, role: ERole, device_id: std::mem::MaybeUninit<HSTRING>) -> HRESULT;
     unsafe fn GetPersistedDefaultAudioEndpoint(&self, process_id: u32, flow: EDataFlow, role: ERole, device_id: *mut std::mem::MaybeUninit<HSTRING>) -> HRESULT;
     unsafe fn ClearAllPersistedApplicationDefaultEndpoints(&self) -> HRESULT;
+}
+
+#[windows::core::interface("f8679f50-850a-41cf-9c72-430f290290c8")]
+unsafe trait IPolicyConfig: IUnknown {
+    unsafe fn slot0(&self) -> HRESULT;
+    unsafe fn slot1(&self) -> HRESULT;
+    unsafe fn slot2(&self) -> HRESULT;
+    unsafe fn slot3(&self) -> HRESULT;
+    unsafe fn slot4(&self) -> HRESULT;
+    unsafe fn slot5(&self) -> HRESULT;
+    unsafe fn slot6(&self) -> HRESULT;
+    unsafe fn slot7(&self) -> HRESULT;
+    unsafe fn slot8(&self) -> HRESULT;
+    unsafe fn slot9(&self) -> HRESULT;
+    unsafe fn SetDefaultEndpoint(&self, device_id: PCWSTR, role: ERole) -> HRESULT;
 }
 
 /// Same layout, the interface ID Windows used before 21H2.
@@ -217,6 +237,25 @@ pub fn set_app_device(pid: u32, flow: Flow, endpoint_id: Option<&str>) -> Result
         };
         call(eMultimedia)?;
         call(eConsole)?;
+    }
+    Ok(())
+}
+
+/// Makes the active device called `name` the Windows default for `flow`, for every role: what
+/// apps play to or record from unless they chose otherwise, and what calls use.
+pub fn set_default_device(flow: Flow, name: &str) -> Result<()> {
+    ensure_com();
+    let device = devices(flow)?
+        .into_iter()
+        .find(|d| device_name(d).ok().as_deref() == Some(name))
+        .ok_or_else(|| anyhow!("\"{name}\" is not an active device"))?;
+    let id: Vec<u16> = device_id(&device)?.encode_utf16().chain(std::iter::once(0)).collect();
+    // Safety: the id buffer outlives every call, and the class is the one the Sound panel uses.
+    unsafe {
+        let policy: IPolicyConfig = CoCreateInstance(&POLICY_CONFIG_CLASS, None, CLSCTX_ALL).context("PolicyConfig is not available")?;
+        for role in [eConsole, eMultimedia, eCommunications] {
+            policy.SetDefaultEndpoint(PCWSTR(id.as_ptr()), role).ok().map_err(|e| anyhow!("SetDefaultEndpoint failed: {e}"))?;
+        }
     }
     Ok(())
 }

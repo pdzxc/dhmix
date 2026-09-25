@@ -53,6 +53,16 @@ Then wire it up:
 The default routing sends every input to A1 and sends Hardware input 1 (your mic) and the
 Player to B1, which is the usual streaming setup.
 
+**Two clicks instead of Windows settings.** On Windows, each virtual card has a **DEFAULT**
+button next to its device picker. On Virtual input 1 it makes that cable the Windows default
+output, so every app plays into the mixer. On Virtual out B1 it makes that cable the Windows
+default microphone, so OBS, Discord or a call hear your mix. If no cable is installed, the status
+line under the top bar says so and links to VB-CABLE.
+
+**Naming.** DHMIX cannot add its own devices to Windows (that needs a signed driver), but you can
+rename a cable in Windows Sound settings, for example `CABLE Input` to `DHMIX Input` and
+`CABLE Output` to `DHMIX Output`. DHMIX recognises the renamed pair.
+
 ## Per-app audio
 
 Windows decides which device each app plays to. The **Applications** button lists every app

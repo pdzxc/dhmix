@@ -66,6 +66,20 @@ pub fn supported() -> bool {
     cfg!(windows)
 }
 
+/// Makes the device called `name` the Windows default for `flow` (playback: what every app plays
+/// to; capture: the microphone apps record from), the same as "Set as default" in Sound settings.
+pub fn set_default_device(flow: Flow, name: &str) -> anyhow::Result<()> {
+    #[cfg(windows)]
+    {
+        windows_impl::set_default_device(flow, name)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (flow, name);
+        anyhow::bail!("Setting the default device is only available on Windows")
+    }
+}
+
 /// Processes that should not be offered for routing.
 pub fn is_system_process(name: &str) -> bool {
     matches!(name.to_ascii_lowercase().as_str(), "system sounds" | "audiodg" | "explorer" | "dhmix" | "shellexperiencehost")
@@ -98,5 +112,11 @@ mod tests {
         assert!(snapshot().0.is_empty());
         assert!(!supported());
         assert!(set_app_device(1, Flow::Playback, None).is_err());
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn unsupported_platforms_refuse_to_set_a_default_device() {
+        assert!(set_default_device(Flow::Playback, "CABLE Input").is_err());
     }
 }

@@ -62,7 +62,12 @@ mod tests {
         widgets::run_themed_test_ui(|ui| {
             widgets::panel(ui, geo.inner + 2.0 * widgets::PANEL_PADDING, 2000.0, |ui| {
                 widgets::panel_header(ui, "Hardware out", Some(("A1", widgets::bus_color(0))), None);
-                widgets::device_combo(ui, "out", &mut None, &[], "Choose speakers / headphones…", geo.inner);
+                // `App::buses_row` sits the device picker in a `ui.horizontal` alongside the
+                // Default button on virtual cards; mirrored here so a fixed-height regression in
+                // that row's own height would still be caught.
+                ui.horizontal(|ui| {
+                    widgets::device_combo(ui, "out", &mut None, &[], "Choose speakers / headphones…", geo.inner);
+                });
                 BusView { index: 0, settings: &mut settings.borrow_mut(), meters: &meters, geo, fader_height, apps: &[], apps_empty: super::super::app::APPS_EMPTY_VIRTUAL_OUT }.show(ui);
                 content_height.set(ui.min_rect().height());
             });

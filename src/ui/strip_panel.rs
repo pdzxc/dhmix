@@ -398,7 +398,12 @@ mod tests {
         widgets::run_themed_test_ui(|ui| {
             widgets::panel(ui, geo.inner + 2.0 * widgets::PANEL_PADDING, 2000.0, |ui| {
                 widgets::panel_header(ui, "Hardware input 1", None, None);
-                widgets::device_combo(ui, "in", &mut None, &[], "Choose a microphone…", geo.inner);
+                // `App::strips_row` sits the device picker in a `ui.horizontal` alongside the
+                // Default button on virtual cards; mirrored here so a fixed-height regression in
+                // that row's own height would still be caught.
+                ui.horizontal(|ui| {
+                    widgets::device_combo(ui, "in", &mut None, &[], "Choose a microphone…", geo.inner);
+                });
                 let mut fine_tune_open = open.get();
                 StripView { index: 0, settings: &mut settings.borrow_mut(), meters: &meters, any_solo: false, fine_tune_open: &mut fine_tune_open, geo, fader_height, apps: &[], apps_empty: super::super::app::APPS_EMPTY_VIRTUAL_IN }.show(ui);
                 open.set(fine_tune_open);

@@ -1,17 +1,28 @@
-//! Soundboard pads and the music player, shown inside the PLAYER strip.
+//! Soundboard pads and the music player, shown at the top of the PLAYER strip.
 
+use super::widgets::{self, COLOR_ACTIVE, COLOR_ASSIGNED, LED_PAIR, PAD_SIZE, PAD_SPACING};
 use crate::engine::player::{load_clip, Clip, PlayerCommand, PlayerStatus};
 use crate::preset::NUM_PADS;
 use crate::SAMPLE_RATE;
 use crossbeam_channel::Sender;
-use super::widgets::{self, COLOR_ACTIVE, COLOR_ASSIGNED};
-use egui::{Ui, Vec2};
+use egui::Ui;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 const PAD_COLUMNS: usize = 3;
-const PAD_SIZE: Vec2 = Vec2::new(96.0, 40.0);
 const AUDIO_EXTENSIONS: [&str; 7] = ["mp3", "wav", "flac", "ogg", "m4a", "aac", "mp4"];
+const PAD_TIPS: [&str; NUM_PADS] = [
+    "Play (Ctrl+Alt+1). Right-click to change.",
+    "Play (Ctrl+Alt+2). Right-click to change.",
+    "Play (Ctrl+Alt+3). Right-click to change.",
+    "Play (Ctrl+Alt+4). Right-click to change.",
+    "Play (Ctrl+Alt+5). Right-click to change.",
+    "Play (Ctrl+Alt+6). Right-click to change.",
+    "Play (Ctrl+Alt+7). Right-click to change.",
+    "Play (Ctrl+Alt+8). Right-click to change.",
+    "Play (Ctrl+Alt+9). Right-click to change.",
+];
+const EMPTY_PAD_TIP: &str = "Click to choose a sound file.";
 
 pub struct Pad {
     pub path: PathBuf,
@@ -81,7 +92,6 @@ impl PlayerPanel {
 
     pub fn show(&mut self, ui: &mut Ui) {
         self.music_controls(ui);
-        ui.separator();
         self.pad_grid(ui);
         if let Some(err) = &self.last_error {
             widgets::error_label(ui, err);
@@ -89,32 +99,36 @@ impl PlayerPanel {
     }
 
     fn music_controls(&mut self, ui: &mut Ui) {
-        ui.label(egui::RichText::new("Music").strong());
+        widgets::section(ui, "Music");
+        let playing = self.status.music_playing.load(Ordering::Relaxed);
+        let loaded = self.music.is_some();
         ui.horizontal(|ui| {
-            if ui.button("Load…").clicked() {
+            if ui.button("Load track…").on_hover_text("MP3, WAV, FLAC, OGG or M4A").clicked() {
                 if let Some(path) = pick_audio_file() {
                     self.load_music(&path, true);
                 }
             }
-            let playing = self.status.music_playing.load(Ordering::Relaxed);
-            if ui.add_enabled(self.music.is_some(), egui::Button::new(if playing { "⏸" } else { "▶" })).clicked() {
+            let play_label = if playing { "Pause" } else { "Play" };
+            if ui.add_enabled(loaded, egui::Button::new(play_label)).clicked() {
                 let _ = self.tx.send(PlayerCommand::MusicPlayPause);
             }
-            if ui.add_enabled(self.music.is_some(), egui::Button::new("⏹")).clicked() {
+            if ui.add_enabled(loaded, egui::Button::new("Stop")).clicked() {
                 let _ = self.tx.send(PlayerCommand::MusicStop);
             }
-            if widgets::toggle(ui, &mut self.music_loop, "LOOP", COLOR_ACTIVE) {
+            if widgets::led(ui, &mut self.music_loop, "LOOP", COLOR_ACTIVE, LED_PAIR, "Start again when the track ends.") {
                 let _ = self.tx.send(PlayerCommand::MusicLoop(self.music_loop));
             }
         });
-        let name = self.music.as_ref().map(|(_, c)| c.name.as_str()).unwrap_or("no track loaded");
-        ui.label(widgets::shorten(name, 40));
+        match &self.music {
+            Some((_, clip)) => widgets::value_label(ui, &widgets::shorten(&clip.name, 36)),
+            None => widgets::hint(ui, "No track loaded. Load one, then send PLAYER to B1 so viewers hear it."),
+        }
 
         let pos = self.status.music_position.load(Ordering::Relaxed) as f32;
         let len = self.status.music_length.load(Ordering::Relaxed).max(1) as f32;
         let mut t = self.seek_target.unwrap_or(pos / len);
         ui.spacing_mut().slider_width = widgets::PLAYER_SLIDER_WIDTH;
-        let slider = ui.add(egui::Slider::new(&mut t, 0.0..=1.0).show_value(false).text(clock(pos, len)));
+        let slider = ui.add_enabled(loaded, egui::Slider::new(&mut t, 0.0..=1.0).show_value(false).text(clock(pos, len)));
         if slider.dragged() || slider.changed() {
             self.seek_target = Some(t);
         }
@@ -123,50 +137,50 @@ impl PlayerPanel {
                 let _ = self.tx.send(PlayerCommand::MusicSeek(target));
             }
         }
-        if ui.add(egui::Slider::new(&mut self.music_gain, 0.0..=1.5).text("music vol")).changed() {
+        if ui.add(egui::Slider::new(&mut self.music_gain, 0.0..=1.5).text("music volume")).changed() {
             let _ = self.tx.send(PlayerCommand::MusicGain(self.music_gain));
         }
     }
 
     fn pad_grid(&mut self, ui: &mut Ui) {
+        widgets::section(ui, "Soundboard");
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Soundboard").strong());
-            if ui.small_button("stop all").clicked() {
+            ui.spacing_mut().slider_width = widgets::PAD_SLIDER_WIDTH;
+            ui.add(egui::Slider::new(&mut self.pad_gain, 0.0..=1.5).text("pad volume"));
+            if self.status.pads_sounding.load(Ordering::Relaxed) > 0 && ui.small_button("Stop all").clicked() {
                 let _ = self.tx.send(PlayerCommand::StopPads);
             }
         });
-        ui.add(egui::Slider::new(&mut self.pad_gain, 0.0..=1.5).text("pad vol"));
         let mut to_assign: Option<usize> = None;
         let mut to_clear: Option<usize> = None;
         let mut to_play: Option<usize> = None;
-        egui::Grid::new("pads").spacing([4.0, 4.0]).show(ui, |ui| {
-            for i in 0..NUM_PADS {
-                ui.vertical(|ui| {
-                    let label = match &self.pads[i] {
-                        Some(p) => format!("{}\n{}", i + 1, widgets::shorten(&p.clip.name, 12)),
-                        None => format!("{}\n+", i + 1),
-                    };
-                    let filled = self.pads[i].is_some();
-                    let fill = if filled { COLOR_ASSIGNED } else { ui.visuals().widgets.inactive.bg_fill };
-                    let button = egui::Button::new(label).min_size(PAD_SIZE).fill(fill);
-                    let response = ui.add(button);
-                    if response.clicked() {
-                        if filled {
-                            to_play = Some(i);
-                        } else {
-                            to_assign = Some(i);
-                        }
+        egui::Grid::new("pads").spacing([PAD_SPACING, PAD_SPACING]).show(ui, |ui| {
+            for (i, tip) in PAD_TIPS.iter().enumerate() {
+                let filled = self.pads[i].is_some();
+                let name = match &self.pads[i] {
+                    Some(p) => widgets::shorten(&p.clip.name, 11),
+                    None => "Add sound".to_string(),
+                };
+                let fill = if filled { COLOR_ASSIGNED } else { widgets::COLOR_INSET };
+                let text_color = if filled { widgets::on_color(fill) } else { widgets::COLOR_TEXT_MUTED };
+                let text = egui::RichText::new(format!("{}  {name}", i + 1)).size(10.0).strong().color(text_color);
+                let response = widgets::tile_button(ui, text, fill, PAD_SIZE).on_hover_text(if filled { *tip } else { EMPTY_PAD_TIP });
+                if response.clicked() {
+                    if filled {
+                        to_play = Some(i);
+                    } else {
+                        to_assign = Some(i);
                     }
-                    response.context_menu(|ui| {
-                        if ui.button("Assign file…").clicked() {
-                            to_assign = Some(i);
-                            ui.close_menu();
-                        }
-                        if ui.button("Clear").clicked() {
-                            to_clear = Some(i);
-                            ui.close_menu();
-                        }
-                    });
+                }
+                response.context_menu(|ui| {
+                    if ui.button("Choose file…").clicked() {
+                        to_assign = Some(i);
+                        ui.close_menu();
+                    }
+                    if ui.button("Clear pad").clicked() {
+                        to_clear = Some(i);
+                        ui.close_menu();
+                    }
                 });
                 if (i + 1) % PAD_COLUMNS == 0 {
                     ui.end_row();
@@ -184,7 +198,6 @@ impl PlayerPanel {
                 self.assign_pad(i, &path);
             }
         }
-        widgets::hint(ui, "Click a pad to play, right-click to change. Ctrl+Alt+1-9 triggers pads globally.");
     }
 }
 

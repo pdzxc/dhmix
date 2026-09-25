@@ -43,6 +43,21 @@ Then wire it up:
 
 The default routing sends every strip to A1 (headphones) and sends HW 1 (your mic) and PLAYER to B1 (the stream/call), which is the usual streaming setup.
 
+## Per-app audio (game, Discord, music in separate strips)
+
+Like Voicemeeter, StreamMix mixes devices; Windows decides which device each app plays to. Open
+Settings → System → Sound → Volume mixer (Windows 11) or "App volume and device preferences"
+(Windows 10) and set each app's output:
+
+| App | Windows output | StreamMix strip |
+| --- | --- | --- |
+| Game | `CABLE Input` | VIRT 1 ← `CABLE Output` |
+| Discord | `CABLE-A Input` | VIRT 2 ← `CABLE-A Output` |
+| Spotify / browser | `CABLE-B Input` | VIRT 3 ← `CABLE-B Output` |
+
+Each strip then has its own fader, effects and routing, so you can send the game to your headphones
+only, or Discord to the stream at a lower level. VB-CABLE plus its A+B pack gives three cables.
+
 ## Soundboard and music
 
 - Click an empty pad to assign an MP3, WAV, FLAC, OGG or M4A file; click a filled pad to play it; right-click to reassign or clear.

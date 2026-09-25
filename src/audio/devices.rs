@@ -50,4 +50,27 @@ mod tests {
         assert!(is_virtual_name("Voicemeeter Out B1"));
         assert!(!is_virtual_name("Realtek High Definition Audio"));
     }
+
+    #[test]
+    fn virtual_inputs_keeps_only_cable_like_names_in_original_order() {
+        let devices = DeviceList {
+            inputs: vec![
+                "Realtek High Definition Audio".to_string(),
+                "CABLE Output (VB-Audio Virtual Cable)".to_string(),
+                "Built-in Microphone".to_string(),
+                "Voicemeeter Out B1".to_string(),
+            ],
+            outputs: vec![],
+        };
+        assert_eq!(
+            devices.virtual_inputs(),
+            vec!["CABLE Output (VB-Audio Virtual Cable)".to_string(), "Voicemeeter Out B1".to_string()]
+        );
+    }
+
+    #[test]
+    fn virtual_inputs_is_empty_when_no_devices_match() {
+        let devices = DeviceList { inputs: vec!["Realtek High Definition Audio".to_string()], outputs: vec![] };
+        assert!(devices.virtual_inputs().is_empty());
+    }
 }

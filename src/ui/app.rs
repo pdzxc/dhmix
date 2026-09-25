@@ -5,7 +5,7 @@ use super::bus_panel::BusView;
 use super::help_panel::HelpPanel;
 use super::player_panel::PlayerPanel;
 use super::strip_panel::StripView;
-use super::widgets::{self, ColumnFrame, Geometry, COLOR_ACTIVE, COLOR_MUTE, COLOR_VIRTUAL};
+use super::widgets::{self, ColumnFrame, Geometry, COLOR_ACTIVE, COLOR_MUTE, COLOR_SOLO, COLOR_VIRTUAL};
 use crate::audio::{list_devices, AudioIo, DeviceList};
 use crate::engine::player::Player;
 use crate::engine::runner::{self, EngineHandle, EngineInputs, RecordTap};
@@ -125,10 +125,6 @@ pub struct App {
     player_open: bool,
     fine_tune_open: [bool; NUM_STRIPS],
     /// Per-column fader heights, nudged every frame so each panel fills its row.
-    strip_fader_height: [f32; NUM_STRIPS],
-    /// Tallest input panel last frame; every input stretches to it so the row is level.
-    input_row_height: f32,
-    bus_fader_height: [f32; NUM_BUSES],
     workspace: Workspace,
     _engine: EngineHandle,
 }
@@ -188,9 +184,6 @@ impl App {
             help: HelpPanel { open: !help_seen },
             player_open: false,
             fine_tune_open: [false; NUM_STRIPS],
-            strip_fader_height: [widgets::FADER_MIN_HEIGHT; NUM_STRIPS],
-            input_row_height: 0.0,
-            bus_fader_height: [widgets::FADER_MIN_HEIGHT; NUM_BUSES],
             workspace: Workspace::Mixer,
             _engine: engine,
         }
@@ -386,7 +379,7 @@ impl App {
         ui.add_space(widgets::SECTION_GAP);
     }
 
-    fn device_card(&mut self, ui: &mut Ui, card: DeviceCard<'_>) {
+    fn device_card(&mut self, ui: &mut Ui, card: DeviceCard<'_>, width: f32) {
         let status = if card.connected {
             Some(("LIVE", if card.route.is_virtual() { COLOR_VIRTUAL } else { COLOR_ACTIVE }))
         } else if card.assigned.is_some() {
@@ -394,8 +387,7 @@ impl App {
         } else {
             Some(("UNASSIGNED", COLOR_MUTE))
         };
-        let width = ui.available_width();
-        widgets::panel(ui, width, |ui| {
+        widgets::panel(ui, width, widgets::DEVICE_CARD_HEIGHT, |ui| {
             widgets::panel_header(ui, &card.title, status);
             widgets::hint(ui, card.purpose);
             if let Some(cable) = card.cable_note {
@@ -413,125 +405,84 @@ impl App {
         });
     }
 
+    /// The Devices page: cards on the mixer's five-column grid, three rows, no scrolling.
     fn devices_view(&mut self, ui: &mut Ui) {
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            widgets::banner(ui, |ui| {
-                ui.label(egui::RichText::new(format!("Device setup: {}/{} essentials connected", self.setup_progress(), SETUP_STEPS)).strong());
-                widgets::hint(ui, "Assign sources first, then choose where each mix leaves Streammix. Changes take effect immediately.");
-            });
+        widgets::banner(ui, |ui| {
+            ui.label(egui::RichText::new(format!("Device setup: {}/{} essentials connected", self.setup_progress(), SETUP_STEPS)).strong());
+            widgets::hint(ui, "Assign sources first, then choose where each mix leaves StreamMix. Changes take effect immediately.");
+        });
 
-            widgets::section(ui, "Finish setup");
-            self.device_card(ui, DeviceCard {
-                title: strip_title(0),
-                purpose: "1. Primary microphone or main physical source.",
-                assigned: self.io.settings.strip_inputs[0].clone(),
-                connected: self.meters.input_connected[0].load(Ordering::Relaxed),
-                choices: self.devices.inputs.clone(),
-                empty: "Choose a microphone or input…",
-                route: DeviceRoute::HardwareInput(0),
-                cable_note: None,
-            });
-            ui.add_space(widgets::SECTION_GAP);
-            self.device_card(ui, DeviceCard {
-                title: bus_title(0),
-                purpose: "2. Your main headphones or speakers.",
-                assigned: self.io.settings.bus_outputs[0].clone(),
-                connected: self.meters.output_connected[0].load(Ordering::Relaxed),
-                choices: self.devices.outputs.clone(),
-                empty: "Choose speakers or headphones…",
-                route: DeviceRoute::HardwareOutput(0),
-                cable_note: None,
-            });
-            ui.add_space(widgets::SECTION_GAP);
-            self.device_card(ui, DeviceCard {
-                title: bus_title(NUM_HW_BUSES),
-                purpose: "3. Send the mix to a streaming or calling app through a virtual cable.",
-                assigned: self.io.settings.bus_outputs[NUM_HW_BUSES].clone(),
-                connected: self.meters.output_connected[NUM_HW_BUSES].load(Ordering::Relaxed),
-                choices: self.devices.outputs.clone(),
-                empty: "Choose a cable input…",
-                route: DeviceRoute::VirtualOutput(NUM_HW_BUSES),
-                cable_note: Some("Cable direction: select the cable’s Input here; choose that cable as the app’s microphone or source."),
-            });
+        let inputs = self.devices.inputs.clone();
+        let outputs = self.devices.outputs.clone();
+        let cables = self.virtual_first_inputs.clone();
+        let strip_card = |this: &Self, i: usize, purpose: &'static str| DeviceCard {
+            title: strip_title(i),
+            purpose,
+            assigned: this.io.settings.strip_inputs[i].clone(),
+            connected: this.meters.input_connected[i].load(Ordering::Relaxed),
+            choices: if i < NUM_HW_STRIPS { inputs.clone() } else { cables.clone() },
+            empty: if i < NUM_HW_STRIPS { "Choose a microphone or input…" } else { "Choose a cable output…" },
+            route: if i < NUM_HW_STRIPS { DeviceRoute::HardwareInput(i) } else { DeviceRoute::VirtualInput(i) },
+            cable_note: (i >= NUM_HW_STRIPS).then_some("Select the cable's Output here; the app plays into that cable."),
+        };
+        let bus_card = |this: &Self, b: usize, purpose: &'static str| DeviceCard {
+            title: bus_title(b),
+            purpose,
+            assigned: this.io.settings.bus_outputs[b].clone(),
+            connected: this.meters.output_connected[b].load(Ordering::Relaxed),
+            choices: outputs.clone(),
+            empty: if b < NUM_HW_BUSES { "Choose speakers or headphones…" } else { "Choose a cable input…" },
+            route: if b < NUM_HW_BUSES { DeviceRoute::HardwareOutput(b) } else { DeviceRoute::VirtualOutput(b) },
+            cable_note: (b >= NUM_HW_BUSES).then_some("Select the cable's Input here; pick that cable as the app's microphone."),
+        };
 
-            widgets::section(ui, "Optional hardware inputs");
-            for i in 1..NUM_HW_STRIPS {
-                self.device_card(ui, DeviceCard {
-                    title: strip_title(i),
-                    purpose: "Optional microphone, instrument, or capture source.",
-                    assigned: self.io.settings.strip_inputs[i].clone(),
-                    connected: self.meters.input_connected[i].load(Ordering::Relaxed),
-                    choices: self.devices.inputs.clone(),
-                    empty: "Choose a microphone or input…",
-                    route: DeviceRoute::HardwareInput(i),
-                    cable_note: None,
-                });
-                ui.add_space(widgets::SECTION_GAP);
-            }
+        let essentials = vec![
+            strip_card(self, 0, "1. Your main microphone."),
+            bus_card(self, 0, "2. Your headphones or speakers."),
+            bus_card(self, NUM_HW_BUSES, "3. What OBS, Discord or a call hears."),
+        ];
+        let more_inputs: Vec<DeviceCard> = (1..NUM_HW_STRIPS)
+            .map(|i| strip_card(self, i, "Optional microphone, instrument or capture source."))
+            .chain((NUM_HW_STRIPS..PLAYER_STRIP).map(|i| strip_card(self, i, "Audio from an app, through a virtual cable.")))
+            .collect();
+        let more_outputs: Vec<DeviceCard> = (1..NUM_HW_BUSES)
+            .map(|b| bus_card(self, b, "Optional monitor, speakers or recorder."))
+            .chain((NUM_HW_BUSES + 1..NUM_BUSES).map(|b| bus_card(self, b, "A second stream, call or recorder feed.")))
+            .collect();
 
-            widgets::section(ui, "Virtual inputs");
-            for i in NUM_HW_STRIPS..PLAYER_STRIP {
-                self.device_card(ui, DeviceCard {
-                    title: strip_title(i),
-                    purpose: "Bring audio from an app or virtual cable into the mixer.",
-                    assigned: self.io.settings.strip_inputs[i].clone(),
-                    connected: self.meters.input_connected[i].load(Ordering::Relaxed),
-                    choices: self.virtual_first_inputs.clone(),
-                    empty: "Choose a cable output…",
-                    route: DeviceRoute::VirtualInput(i),
-                    cable_note: Some("Cable direction: select the cable’s Output here; the app sends audio into that cable."),
-                });
-                ui.add_space(widgets::SECTION_GAP);
-            }
+        self.device_row(ui, "Finish setup", essentials);
+        self.device_row(ui, "More inputs", more_inputs);
+        self.device_row(ui, "More outputs", more_outputs);
+    }
 
-            widgets::section(ui, "Optional hardware outputs");
-            for b in 1..NUM_HW_BUSES {
-                self.device_card(ui, DeviceCard {
-                    title: bus_title(b),
-                    purpose: "Optional monitor, speaker, or recording destination.",
-                    assigned: self.io.settings.bus_outputs[b].clone(),
-                    connected: self.meters.output_connected[b].load(Ordering::Relaxed),
-                    choices: self.devices.outputs.clone(),
-                    empty: "Choose speakers or headphones…",
-                    route: DeviceRoute::HardwareOutput(b),
-                    cable_note: None,
-                });
-                ui.add_space(widgets::SECTION_GAP);
-            }
-
-            widgets::section(ui, "Optional virtual outputs");
-            for b in NUM_HW_BUSES + 1..NUM_BUSES {
-                self.device_card(ui, DeviceCard {
-                    title: bus_title(b),
-                    purpose: "Send this mix to a streaming, calling, or recording app through a virtual cable.",
-                    assigned: self.io.settings.bus_outputs[b].clone(),
-                    connected: self.meters.output_connected[b].load(Ordering::Relaxed),
-                    choices: self.devices.outputs.clone(),
-                    empty: "Choose a cable input…",
-                    route: DeviceRoute::VirtualOutput(b),
-                    cable_note: Some("Cable direction: select the cable’s Input here; choose that cable as the app’s microphone or source."),
-                });
-                ui.add_space(widgets::SECTION_GAP);
+    /// One captioned row of device cards on the mixer's column grid.
+    fn device_row(&mut self, ui: &mut Ui, caption: &str, cards: Vec<DeviceCard<'_>>) {
+        widgets::section(ui, caption);
+        let width = widgets::column_width(ui.available_width(), mixer_columns());
+        ui.horizontal_top(|ui| {
+            for card in cards {
+                self.device_card(ui, card, width);
             }
         });
     }
 
-    /// Draws the device inputs as one row of equal columns; the Player has its own window so this
-    /// row has as many columns as the output row and lines up with it. Returns the tallest panel
-    /// so the next frame can level the row to it.
-    fn strips_row(&mut self, ui: &mut Ui, row_height: f32) -> f32 {
+    /// Draws the device inputs as one row of equal, fixed-size columns; the Player has its own
+    /// window so this row has as many columns as the output row and lines up with it.
+    fn strips_row(&mut self, ui: &mut Ui, row_height: f32) {
         let width = widgets::column_width(ui.available_width(), mixer_columns());
         let geo = Geometry::for_column(width);
-        let mut tallest: f32 = 0.0;
+        let fader_height = widgets::fader_height_in(row_height, widgets::INPUT_FIXED_HEIGHT);
         ui.horizontal_top(|ui| {
             for i in 0..PLAYER_STRIP {
-                let fader_height = self.strip_fader_height[i];
-                let rect = widgets::panel(ui, width, |ui| {
+                widgets::panel(ui, width, row_height, |ui| {
                     let mut settings = self.settings.lock();
                     let any_solo = settings.any_solo();
                     let connected = self.meters.input_connected[i].load(Ordering::Relaxed);
-                    let status = if settings.strips[i].mute {
+                    let strip = &settings.strips[i];
+                    let status = if strip.mute {
                         Some(("MUTED", COLOR_MUTE))
+                    } else if any_solo && !strip.solo {
+                        Some(("SILENT", COLOR_SOLO))
                     } else if connected {
                         Some(("LIVE", COLOR_ACTIVE))
                     } else {
@@ -558,20 +509,17 @@ impl App {
                     }
                     .show(ui);
                 });
-                tallest = tallest.max(rect.height());
-                self.strip_fader_height[i] = widgets::stretch_towards(fader_height, rect.height(), row_height);
             }
         });
-        tallest
     }
 
     fn buses_row(&mut self, ui: &mut Ui, row_height: f32) {
         let width = widgets::column_width(ui.available_width(), mixer_columns());
         let geo = Geometry::for_column(width);
+        let fader_height = widgets::fader_height_in(row_height, widgets::OUTPUT_FIXED_HEIGHT);
         ui.horizontal_top(|ui| {
             for b in 0..NUM_BUSES {
-                let fader_height = self.bus_fader_height[b];
-                let rect = widgets::panel(ui, width, |ui| {
+                widgets::panel(ui, width, row_height, |ui| {
                     let mut settings = self.settings.lock();
                     let hardware = b < NUM_HW_BUSES;
                     let connected = self.meters.output_connected[b].load(Ordering::Relaxed);
@@ -590,7 +538,6 @@ impl App {
                     }
                     BusView { index: b, settings: &mut settings.buses[b], meters: &self.meters, geo, fader_height }.show(ui);
                 });
-                self.bus_fader_height[b] = widgets::stretch_towards(fader_height, rect.height(), row_height);
             }
         });
     }
@@ -653,10 +600,9 @@ impl eframe::App for App {
                     // pushing a neighbouring column out of alignment.
                     let captions = 2.0 * (widgets::SECTION_GAP + widgets::SECTION_CAPTION_HEIGHT) + widgets::SECTION_GAP;
                     let rows_height = ui.available_height() - captions;
-                    // Inputs get their share, or more if one input panel (the Player) needs it.
-                    let input_height = input_row_target(rows_height).max(self.input_row_height);
+                    let input_height = input_row_target(rows_height);
                     widgets::section(ui, "Inputs");
-                    self.input_row_height = self.strips_row(ui, input_height);
+                    self.strips_row(ui, input_height);
                     widgets::section(ui, "Outputs");
                     let output_height = ui.available_height() - widgets::SECTION_GAP;
                     self.buses_row(ui, output_height);

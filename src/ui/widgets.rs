@@ -35,6 +35,8 @@ pub const TABLE_SPACING: Vec2 = Vec2::new(12.0, 6.0);
 /// The floating Player window: wide enough for the pad grid beside the fader.
 pub const PLAYER_WINDOW_WIDTH: f32 = 360.0;
 pub const PLAYER_WINDOW_FADER_HEIGHT: f32 = 150.0;
+/// Every card on the Devices page is this tall: header, purpose, cable note, picker, state.
+pub const DEVICE_CARD_HEIGHT: f32 = 150.0;
 pub const PAD_HEIGHT: f32 = 26.0;
 pub const PAD_SPACING: f32 = 4.0;
 pub const XY_PAD_HEIGHT: f32 = 70.0;
@@ -51,10 +53,12 @@ pub const MIN_COLUMN_WIDTH: f32 = max_bus_group_count() as f32 * MIN_LED_ROUTE_W
     + FADER_WIDTH
     + METER_WIDTH
     + 2.0 * PANEL_PADDING;
-/// Fixed content of an input column besides its fader: header, device, knobs, pad, pan row.
-pub const INPUT_FIXED_HEIGHT: f32 = 230.0;
-/// Fixed content of an output column besides its fader: header, device, tone knobs, LEDs.
-pub const OUTPUT_FIXED_HEIGHT: f32 = 110.0;
+/// Height of an input column beyond its fader, measured from the rendered panel at a known
+/// fader height. Re-measure after changing panel_header, the device combo, KNOB_SIZE,
+/// XY_PAD_HEIGHT, the pan row, PANEL_PADDING or ITEM_SPACING, or the fader will be clipped.
+pub const INPUT_FIXED_HEIGHT: f32 = 184.0;
+/// Same for an output column: header, device combo, tone knobs, LED row, padding.
+pub const OUTPUT_FIXED_HEIGHT: f32 = 84.0;
 /// Top bar plus the first-run banner.
 pub const CHROME_HEIGHT: f32 = 140.0;
 /// Smallest window: the larger mixer row at its minimum width, and both rows at minimum height.
@@ -139,14 +143,10 @@ pub struct ColumnFrame {
     pub any_solo: bool,
 }
 
-/// Nudges a stretchable height towards filling `target`, given what the panel measured last frame.
-pub fn stretch_towards(current: f32, measured: f32, target: f32) -> f32 {
-    let diff = target - measured;
-    if diff.abs() < 1.0 {
-        current
-    } else {
-        (current + diff).clamp(FADER_MIN_HEIGHT, FADER_MAX_HEIGHT)
-    }
+/// Fader height that makes a panel with `fixed` px of other content exactly `row_height` tall.
+/// Heights come only from the window size, so nothing the user clicks can change a panel's size.
+pub fn fader_height_in(row_height: f32, fixed: f32) -> f32 {
+    (row_height - fixed).clamp(FADER_MIN_HEIGHT, FADER_MAX_HEIGHT)
 }
 
 // ---- Colour tokens ---------------------------------------------------------------------------
@@ -236,14 +236,14 @@ fn framed(fill: Color32, stroke: Color32) -> egui::Frame {
         .inner_margin(Margin::same(PANEL_PADDING))
 }
 
-/// One strip or bus: a console panel whose outer width is exactly `width`. Returns its rect so the
-/// caller can measure how tall the content came out.
-pub fn panel(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) -> Rect {
+/// One strip or bus: a console panel whose outer size is exactly `width` by `height`. Returns its
+/// rect. Content that does not fit is clipped; the panel never grows or shrinks with it.
+pub fn panel(ui: &mut Ui, width: f32, height: f32, add: impl FnOnce(&mut Ui)) -> Rect {
     let frame = framed(COLOR_STRIP, COLOR_STRIP_STROKE);
     let panel_min = ui.next_widget_position();
     let inner_width = (width - 2.0 * PANEL_PADDING).max(0.0);
     let inner_min = panel_min + Vec2::splat(PANEL_PADDING);
-    let inner_max = egui::pos2(inner_min.x + inner_width, ui.max_rect().bottom() - PANEL_PADDING);
+    let inner_max = egui::pos2(inner_min.x + inner_width, panel_min.y + height - PANEL_PADDING);
     let background = ui.painter().add(Shape::Noop);
 
     // A normal `Frame::show` grows its parent when a child asks for more width. Mixer controls
@@ -256,10 +256,9 @@ pub fn panel(ui: &mut Ui, width: f32, add: impl FnOnce(&mut Ui)) -> Rect {
             .layout(egui::Layout::top_down(Align::Min)),
     );
     content_ui.set_width(inner_width);
-    content_ui.set_clip_rect(content_ui.clip_rect().intersect(Rect::from_min_max(panel_min, egui::pos2(panel_min.x + width, ui.max_rect().bottom()))));
+    content_ui.set_clip_rect(content_ui.clip_rect().intersect(Rect::from_min_max(panel_min, egui::pos2(panel_min.x + width, panel_min.y + height))));
     add(&mut content_ui);
 
-    let height = content_ui.min_rect().height() + 2.0 * PANEL_PADDING;
     let rect = Rect::from_min_size(panel_min, Vec2::new(width, height));
     ui.painter().set(background, frame.paint(rect));
     ui.allocate_rect(rect, Sense::hover());
@@ -660,35 +659,12 @@ mod tests {
     fn panel_keeps_its_declared_width_when_content_requests_more_room() {
         egui::__run_test_ui(|ui| {
             let declared = 200.0;
-            let rect = panel(ui, declared, |ui| {
-                ui.allocate_exact_size(Vec2::new(declared + 40.0, 20.0), Sense::hover());
+            let rect = panel(ui, declared, 120.0, |ui| {
+                ui.allocate_exact_size(Vec2::new(declared + 40.0, 300.0), Sense::hover());
             });
-            assert!(
-                (rect.width() - declared).abs() < 1e-4,
-                "panel expanded from {declared} to {} px",
-                rect.width()
-            );
+            assert!((rect.width() - declared).abs() < 1e-4, "panel expanded from {declared} to {} px", rect.width());
+            assert!((rect.height() - 120.0).abs() < 1e-4, "panel grew to {} px tall", rect.height());
         });
-    }
-
-    #[test]
-    fn stretch_moves_towards_the_target_and_stays_in_range() {
-        assert_eq!(stretch_towards(150.0, 300.0, 340.0), 190.0);
-        assert_eq!(stretch_towards(150.0, 300.0, 300.5), 150.0);
-        assert_eq!(stretch_towards(150.0, 300.0, 5000.0), FADER_MAX_HEIGHT);
-        assert_eq!(stretch_towards(150.0, 300.0, 10.0), FADER_MIN_HEIGHT);
-    }
-
-    #[test]
-    fn stretch_towards_is_idempotent_once_measured_equals_target() {
-        // Once the panel has actually measured up to the target height, repeatedly asking to
-        // stretch towards that same target must not keep nudging the stored height.
-        for current in [FADER_MIN_HEIGHT, 150.0, 300.0, FADER_MAX_HEIGHT] {
-            let once = stretch_towards(current, 220.0, 220.0);
-            assert_eq!(once, current, "no movement when measured already equals target");
-            let twice = stretch_towards(once, 220.0, 220.0);
-            assert_eq!(twice, once, "applying again from a settled state must be a no-op");
-        }
     }
 
     /// The narrowest window the app claims to support: MIN_WINDOW.x px split across every mixer
@@ -706,6 +682,46 @@ mod tests {
         assert!(g.pad.x > 0.0);
         assert!(g.led_route_hardware.x >= MIN_LED_ROUTE_WIDTH);
         assert!(g.led_route_virtual.x >= MIN_LED_ROUTE_WIDTH);
+    }
+
+    #[test]
+    fn fader_height_fills_the_row_and_stays_within_its_limits() {
+        assert_eq!(fader_height_in(334.0, INPUT_FIXED_HEIGHT), 150.0);
+        assert_eq!(fader_height_in(234.0, OUTPUT_FIXED_HEIGHT), 150.0);
+        assert_eq!(fader_height_in(50.0, INPUT_FIXED_HEIGHT), FADER_MIN_HEIGHT);
+        assert_eq!(fader_height_in(5000.0, INPUT_FIXED_HEIGHT), FADER_MAX_HEIGHT);
+    }
+
+    /// A taller row must never hand back a shorter fader: the whole point of deriving the fader
+    /// height from the row is that growing the window never shrinks a panel's content.
+    #[test]
+    fn fader_height_in_is_monotonic_in_row_height() {
+        let fixed = INPUT_FIXED_HEIGHT;
+        let mut previous = fader_height_in(0.0, fixed);
+        let mut row = 20.0;
+        while row <= 5000.0 {
+            let height = fader_height_in(row, fixed);
+            assert!(height >= previous, "fader_height_in({row}, {fixed}) = {height} is shorter than the previous row's {previous}");
+            previous = height;
+            row += 20.0;
+        }
+    }
+
+    /// A panel whose content is shorter than its declared height must not shrink to fit the
+    /// content: neighbouring columns rely on every panel in a row being exactly `row_height` tall.
+    #[test]
+    fn panel_keeps_its_declared_height_when_content_is_shorter() {
+        egui::__run_test_ui(|ui| {
+            let declared_height = 200.0;
+            let rect = panel(ui, 100.0, declared_height, |ui| {
+                ui.allocate_exact_size(Vec2::new(50.0, 20.0), Sense::hover());
+            });
+            assert!(
+                (rect.height() - declared_height).abs() < 1e-4,
+                "panel shrank from {declared_height} to {} px",
+                rect.height()
+            );
+        });
     }
 
     #[test]

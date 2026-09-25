@@ -130,9 +130,6 @@ impl StripView<'_> {
                 *self.fine_tune_open = !*self.fine_tune_open;
             }
         });
-        if self.any_solo && !self.settings.solo && !self.settings.mute {
-            widgets::hint(ui, "Silent while another strip is soloed");
-        }
         self.fine_tune_window(ui.ctx());
     }
 
